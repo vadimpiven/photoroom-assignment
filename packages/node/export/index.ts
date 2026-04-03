@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { addon } from "./addon.ts";
+import { Addon } from "./addon.ts";
+import type { NativeHandle } from "./addon-def.ts";
 
 /** Opaque handle to a registered operation. */
 export class OpHandle {
   /** @internal */
-  readonly _inner: unknown;
+  readonly _inner: NativeHandle;
 
   /** @internal */
-  constructor(inner: unknown) {
+  constructor(inner: NativeHandle) {
     this._inner = inner;
   }
 }
@@ -16,10 +17,10 @@ export class OpHandle {
 /** Opaque handle to a graph node. */
 export class NodeHandle {
   /** @internal */
-  readonly _inner: unknown;
+  readonly _inner: NativeHandle;
 
   /** @internal */
-  constructor(inner: unknown) {
+  constructor(inner: NativeHandle) {
     this._inner = inner;
   }
 
@@ -28,7 +29,7 @@ export class NodeHandle {
    * caching enabled.
    */
   cached(): NodeHandle {
-    return new NodeHandle(addon.nodeCached(this._inner));
+    return new NodeHandle(Addon.nodeCached(this._inner));
   }
 }
 
@@ -38,45 +39,42 @@ export class NodeHandle {
  * Holds the eval cache and JS callback registry.
  */
 export class Context {
-  private readonly state: unknown;
+  private readonly state: NativeHandle;
 
   constructor() {
-    this.state = addon.contextNew();
+    this.state = Addon.contextNew();
   }
 
   /**
    * Register an operation with a label (for debug),
    * expected input count, and a JS callback.
    */
-  registerOp(
-    label: string,
-    numInputs: number,
-    apply: (...args: number[]) => number,
-  ): OpHandle {
-    return new OpHandle(
-      addon.contextRegisterOp(this.state, label, numInputs, apply),
-    );
+  registerOp(label: string, numInputs: number, apply: (...args: number[]) => number): OpHandle {
+    return new OpHandle(Addon.contextRegisterOp(this.state, label, numInputs, apply));
   }
 
   /** Create a leaf node holding a constant f32 value. */
   value(v: number): NodeHandle {
-    return new NodeHandle(addon.contextValue(v));
+    return new NodeHandle(Addon.contextValue(v));
   }
 
   /** Create an inner node applying `op` to `inputs`. */
   node(op: OpHandle, inputs: NodeHandle[]): NodeHandle {
     return new NodeHandle(
-      addon.contextNode(op._inner, inputs.map((n) => n._inner)),
+      Addon.contextNode(
+        op._inner,
+        inputs.map((n) => n._inner),
+      ),
     );
   }
 
   /** Evaluate a graph, returning the numeric result. */
   evaluate(root: NodeHandle): number {
-    return addon.contextEvaluate(this.state, root._inner);
+    return Addon.contextEvaluate(this.state, root._inner);
   }
 
   /** Return a debug tree string for a graph. */
   debugTree(root: NodeHandle): string {
-    return addon.contextDebugTree(root._inner);
+    return Addon.contextDebugTree(root._inner);
   }
 }

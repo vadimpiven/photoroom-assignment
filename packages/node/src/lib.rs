@@ -21,20 +21,25 @@ use neon::prelude::*;
 
 // ── Wrapper types (Finalize for JsBox) ──────────────────
 
-/// Wraps a [`Node`] for `JsBox`.
+/// Wraps a [`Node`] for `JsBox` (orphan rule).
 struct NodeHandle(Node);
 
 impl Finalize for NodeHandle {}
 
-/// Proxy operation stored in the core graph for JS callbacks.
-/// `apply()` is never called — the neon eval loop invokes
-/// the JS callback directly.
-struct JsProxyOp {
+/// Wraps an `Arc<dyn Operation>` for `JsBox` (orphan rule).
+struct OpHandle(Arc<dyn Operation>);
+
+impl Finalize for OpHandle {}
+
+/// Placeholder operation stored in the core graph when the
+/// real logic lives in a JS callback. `apply()` is never
+/// called — [`eval_with_js`] invokes the callback directly.
+struct PlaceholderOp {
     label: String,
     num_inputs: usize,
 }
 
-impl Operation for JsProxyOp {
+impl Operation for PlaceholderOp {
     fn label(&self) -> &str {
         &self.label
     }
@@ -44,51 +49,44 @@ impl Operation for JsProxyOp {
     }
 
     fn apply(&self, _inputs: &[f32]) -> f32 {
-        unreachable!("JsProxyOp must be evaluated via neon eval")
+        unreachable!("PlaceholderOp must be evaluated via eval_with_js")
     }
 }
 
-/// Holds the `Arc<dyn Operation>` for graph construction.
-/// For JS ops this is a [`JsProxyOp`]; the real callback
-/// lives in `BindingState.js_callbacks`.
-struct OpHandle(Arc<dyn Operation>);
-
-impl Finalize for OpHandle {}
-
-/// Per-context state: eval cache + JS callback lookup.
-struct BindingState {
+/// Per-`Context` state: eval cache + JS callback registry.
+struct ContextState {
     eval_ctx: EvalContext,
-    /// Maps `Arc` data pointer to `Root<JsFunction>`.
-    js_callbacks: HashMap<usize, Root<JsFunction>>,
+    /// Maps operation identity to the JS callback.
+    callbacks: HashMap<usize, Root<JsFunction>>,
 }
 
-impl Finalize for BindingState {}
+impl Finalize for ContextState {}
 
 // ── Helpers ─────────────────────────────────────────────
 
-/// Extract the data pointer from an `Arc<dyn Operation>`
-/// as a `usize` key for the JS callback lookup table.
-fn op_ptr_key(op: &Arc<dyn Operation>) -> usize {
+/// Stable identity for an `Arc<dyn Operation>`, used as
+/// the lookup key into the JS callback registry.
+fn op_identity(op: &Arc<dyn Operation>) -> usize {
     Arc::as_ptr(op).cast::<()>() as usize
 }
 
-// ── Neon eval (handles both Rust and JS ops) ────────────
+// ── Evaluation with JS callback dispatch ────────────────
 
-/// Evaluate a graph, calling JS callbacks via `cx` when
-/// encountered instead of going through `Operation::apply`.
-fn neon_eval<'cx>(
+/// Evaluate a graph, dispatching JS callbacks via `cx`
+/// when a [`PlaceholderOp`] is encountered.
+fn eval_with_js<'cx>(
     cx: &mut FunctionContext<'cx>,
     node: &Node,
-    state: &mut BindingState,
+    state: &mut ContextState,
 ) -> NeonResult<f32> {
     match node.kind() {
         NodeKind::Value(v) => Ok(*v),
         NodeKind::Op { op, inputs } => {
             let mut args = Vec::with_capacity(inputs.len());
             for input in inputs {
-                args.push(neon_eval(cx, input, state)?);
+                args.push(eval_with_js(cx, input, state)?);
             }
-            if let Some(root) = state.js_callbacks.get(&op_ptr_key(op)) {
+            if let Some(root) = state.callbacks.get(&op_identity(op)) {
                 let func = root.to_inner(cx);
                 let this = cx.undefined();
                 let js_args: Vec<Handle<'cx, JsValue>> = args
@@ -105,11 +103,11 @@ fn neon_eval<'cx>(
         },
         NodeKind::Cached(inner) => {
             let id = inner.id();
-            if let Some(v) = state.eval_ctx.get(&id) {
+            if let Some(v) = state.eval_ctx.get_cached(&id) {
                 return Ok(v);
             }
-            let v = neon_eval(cx, inner, state)?;
-            state.eval_ctx.insert(id, v);
+            let v = eval_with_js(cx, inner, state)?;
+            state.eval_ctx.cache(id, v);
             Ok(v)
         },
     }
@@ -117,13 +115,13 @@ fn neon_eval<'cx>(
 
 // ── Exported functions ──────────────────────────────────
 
-/// Create a new binding context (holds eval cache and
+/// Create a new context (holds eval cache and
 /// JS callback registry).
 #[neon::export(name = "contextNew")]
-fn context_new() -> Result<RefCell<BindingState>, neon::types::extract::Error> {
-    Ok(RefCell::new(BindingState {
+fn context_new() -> Result<RefCell<ContextState>, neon::types::extract::Error> {
+    Ok(RefCell::new(ContextState {
         eval_ctx: EvalContext::new(),
-        js_callbacks: HashMap::new(),
+        callbacks: HashMap::new(),
     }))
 }
 
@@ -131,23 +129,23 @@ fn context_new() -> Result<RefCell<BindingState>, neon::types::extract::Error> {
 #[neon::export(name = "contextRegisterOp", context)]
 fn context_register_op<'cx>(
     cx: &mut FunctionContext<'cx>,
-    state: Handle<'cx, JsBox<RefCell<BindingState>>>,
+    state: Handle<'cx, JsBox<RefCell<ContextState>>>,
     label: String,
     num_inputs: f64,
     callback: Handle<'cx, JsFunction>,
 ) -> JsResult<'cx, JsBox<OpHandle>> {
-    let proxy: Arc<dyn Operation> = Arc::new(JsProxyOp {
+    let placeholder: Arc<dyn Operation> = Arc::new(PlaceholderOp {
         label,
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         num_inputs: num_inputs as usize,
     });
-    let key = op_ptr_key(&proxy);
+    let key = op_identity(&placeholder);
     let root = callback.root(cx);
 
-    let mut bs = state.borrow_mut();
-    bs.js_callbacks.insert(key, root);
+    let mut cs = state.borrow_mut();
+    cs.callbacks.insert(key, root);
 
-    Ok(cx.boxed(OpHandle(proxy)))
+    Ok(cx.boxed(OpHandle(placeholder)))
 }
 
 /// Create a leaf node holding a constant f32 value.
@@ -204,11 +202,11 @@ fn node_cached<'cx>(
 #[neon::export(name = "contextEvaluate", context)]
 fn context_evaluate<'cx>(
     cx: &mut FunctionContext<'cx>,
-    state: Handle<'cx, JsBox<RefCell<BindingState>>>,
+    state: Handle<'cx, JsBox<RefCell<ContextState>>>,
     root: Handle<'cx, JsBox<NodeHandle>>,
 ) -> JsResult<'cx, JsNumber> {
-    let mut bs = state.borrow_mut();
-    let v = neon_eval(cx, &root.0, &mut bs)?;
+    let mut cs = state.borrow_mut();
+    let v = eval_with_js(cx, &root.0, &mut cs)?;
     Ok(cx.number(f64::from(v)))
 }
 

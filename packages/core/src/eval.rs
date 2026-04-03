@@ -24,15 +24,15 @@ impl EvalContext {
         Self::default()
     }
 
-    /// Look up a cached value by node identity.
+    /// Look up a cached result by node identity.
     #[must_use]
-    pub fn get(&self, id: &NodeId) -> Option<f32> {
+    pub fn get_cached(&self, id: &NodeId) -> Option<f32> {
         self.cache.get(id).copied()
     }
 
-    /// Store a computed value for a node identity.
-    pub fn insert(&mut self, id: NodeId, value: f32) {
-        self.cache.insert(id, value);
+    /// Store a computed result for a node identity.
+    pub fn cache(&mut self, id: NodeId, result: f32) {
+        self.cache.insert(id, result);
     }
 }
 

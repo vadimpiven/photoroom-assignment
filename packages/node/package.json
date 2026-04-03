@@ -14,7 +14,7 @@
   },
   "scripts": {
     "type-check": "pnpm exec tsc --noEmit",
-    "build:cargo": "cargo build",
+    "build:cargo": "cargo build && node ../../scripts/copy-addon.ts",
     "build:ts": "vite build && pnpm pack --out package.tar.gz",
     "build": "pnpm run build:cargo && pnpm run build:ts",
     "test:vitest": "pnpm exec vitest run --coverage",
@@ -35,5 +35,8 @@
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
+  },
+  "addon": {
+    "path": "./dist/dag_ops_node.node"
   }
 }

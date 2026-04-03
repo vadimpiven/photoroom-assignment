@@ -23,9 +23,7 @@ describe("Context", () => {
 
   it("custom JS callback as operation", () => {
     const ctx = new Context();
-    const clamp = ctx.registerOp("x -> clamp(x, 0, 1)", 1, (x) =>
-      Math.min(1, Math.max(0, x)),
-    );
+    const clamp = ctx.registerOp("x -> clamp(x, 0, 1)", 1, (x) => Math.min(1, Math.max(0, x)));
     expect(ctx.evaluate(ctx.node(clamp, [ctx.value(5)]))).toBeCloseTo(1, 5);
     expect(ctx.evaluate(ctx.node(clamp, [ctx.value(-3)]))).toBeCloseTo(0, 5);
     expect(ctx.evaluate(ctx.node(clamp, [ctx.value(0.5)]))).toBeCloseTo(0.5, 5);

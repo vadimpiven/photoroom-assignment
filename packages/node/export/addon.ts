@@ -1,45 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import process from "node:process";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Addon as AddonDef } from "./addon-def.ts";
+import packageJson from "../package.json" with { type: "json" };
 
-const thisDir = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(thisDir, "..", "..", "..");
+const nodeFileUrl: string = import.meta.url;
+const nodeDirname: string = dirname(fileURLToPath(nodeFileUrl));
+const nodeRequire: NodeJS.Require = createRequire(nodeFileUrl);
 
-function loadAddon(): NeonAddon {
-  const ext =
-    process.platform === "win32"
-      ? "dll"
-      : process.platform === "darwin"
-        ? "dylib"
-        : "so";
-  const prefix = process.platform === "win32" ? "" : "lib";
-  const libPath = join(
-    projectRoot,
-    "target",
-    "debug",
-    `${prefix}dag_ops_node.${ext}`,
-  );
-  const mod: { exports: NeonAddon } = { exports: {} as NeonAddon };
-  process.dlopen(mod, libPath);
-  return mod.exports;
-}
+// Resolve path to native addon (NAPI 8, requires Node.js 20+)
+// Require calls dlopen under the hood
+// DLOpen searches for napi_register_module_v1 in addon export table
+// And neon exports napi_register_module_v1 from #[neon::export]
+const addonPath = join(nodeDirname, "..", packageJson.addon.path);
+const Addon: AddonDef = nodeRequire(addonPath);
 
-/** Raw neon export signatures. */
-export interface NeonAddon {
-  contextNew(): unknown;
-  contextRegisterOp(
-    ctx: unknown,
-    label: string,
-    numInputs: number,
-    callback: (...args: number[]) => number,
-  ): unknown;
-  contextValue(v: number): unknown;
-  contextNode(op: unknown, inputs: unknown[]): unknown;
-  nodeCached(node: unknown): unknown;
-  contextEvaluate(ctx: unknown, root: unknown): number;
-  contextDebugTree(root: unknown): string;
-}
-
-export const addon: NeonAddon = loadAddon();
+export { Addon };

@@ -83,7 +83,7 @@ pub trait Operation: Send + Sync {
 pub struct CustomOp {
   label: String,
   num_inputs: usize,
-  apply: Box<dyn Fn(&[f32]) -> f32 + Send + Sync>,
+  apply: ApplyFn,
 }
 ```
 
@@ -94,7 +94,7 @@ pub struct CustomOp {
 #[derive(Clone)]
 pub struct Node(Arc<NodeKind>);
 
-enum NodeKind {
+pub enum NodeKind {
   Value(f32),
   Op {
     op: Arc<dyn Operation>,
@@ -105,17 +105,12 @@ enum NodeKind {
 
 /// Opaque identity for cache lookups.
 #[derive(Clone, Copy, Hash, Eq, PartialEq)]
-struct NodeId(usize);
+pub struct NodeId(usize);
 
 impl Node {
-  /// Returns a new Node wrapping self with caching.
-  pub fn cached(self) -> Node {
-    Node(Arc::new(NodeKind::Cached(self)))
-  }
-
-  fn id(&self) -> NodeId {
-    NodeId(Arc::as_ptr(&self.0) as usize)
-  }
+  pub fn cached(self) -> Node;
+  pub fn id(&self) -> NodeId;
+  pub fn kind(&self) -> &NodeKind;
 }
 ```
 
@@ -134,14 +129,23 @@ pub fn node(
 ```
 
 Core `node()` panics on arity mismatch. The neon layer
-catches this and calls `cx.throw_error()` instead, so
-JS callers see a proper exception.
+catches this via `catch_unwind` and calls
+`cx.throw_error()` instead, so JS callers see a proper
+exception.
 
 ### Evaluation
 
 ```rust
 pub struct EvalContext {
   cache: HashMap<NodeId, f32>,
+}
+
+impl EvalContext {
+  pub fn new() -> Self;
+  /// Look up a cached result by node identity.
+  pub fn get_cached(&self, id: &NodeId) -> Option<f32>;
+  /// Store a computed result for a node identity.
+  pub fn cache(&mut self, id: NodeId, result: f32);
 }
 
 pub fn eval(
@@ -156,11 +160,11 @@ pub fn eval(
     }
     NodeKind::Cached(inner) => {
       let id = inner.id();
-      if let Some(&v) = ctx.cache.get(&id) {
+      if let Some(v) = ctx.get_cached(&id) {
         return v;
       }
       let v = eval(inner, ctx);
-      ctx.cache.insert(id, v);
+      ctx.cache(id, v);
       v
     }
   }
@@ -177,7 +181,8 @@ always recompute.
 pub fn debug_tree(node: &Node) -> String;
 ```
 
-`Value` prints the f32 literal. `Op` prints
+`Value` prints the f32 literal (integer formatting
+when possible: `42` not `42.0`). `Op` prints
 `op.label()`. `Cached` adds a `[cached]` prefix.
 Box-drawing characters (`├──`, `└──`, `│`) for tree
 structure.
@@ -196,6 +201,19 @@ packages/core/src/
 
 ## Neon layer (`packages/node/src/lib.rs`)
 
+### Wrapper types (orphan rule)
+
+Core types cannot implement neon's `Finalize` from
+the `node` crate. Thin wrappers solve this:
+
+```rust
+struct NodeHandle(Node);
+impl Finalize for NodeHandle {}
+
+struct OpHandle(Arc<dyn Operation>);
+impl Finalize for OpHandle {}
+```
+
 ### JS callback design
 
 All evaluation originates from JS via
@@ -205,65 +223,78 @@ the main thread — no `Channel`, no async, no deadlock
 risk.
 
 ```rust
-/// JS-defined operation, callable only from the
-/// JS main thread via FunctionContext.
-struct JsOp {
+/// Placeholder in the core graph. The real callback
+/// lives in ContextState.callbacks.
+struct PlaceholderOp {
   label: String,
   num_inputs: usize,
-  root: Root<JsFunction>,
 }
 ```
 
-`JsOp` does **not** implement `Operation` (which
-requires `Send + Sync`). Instead, the neon layer has
-its own eval loop that checks the operation type:
+`PlaceholderOp` implements `Operation` with
+`apply()` as `unreachable!()` — it exists only to
+satisfy `core::node(Arc<dyn Operation>, ...)`.
+The real JS callback is stored separately in
+`ContextState.callbacks`, keyed by the `Arc` data
+pointer (`op_identity()` helper).
 
-- **Rust `Arc<dyn Operation>`** — calls `op.apply()`
-  directly.
-- **`JsOp`** — calls
-  `root.to_inner(cx).call_with(&cx).args(...).apply(cx)`
-  to invoke the JS callback synchronously.
+During evaluation, `eval_with_js` checks each
+operation's identity against the callback registry:
 
-This means `packages/node` has a parallel eval function
-that threads `FunctionContext` through the recursion.
+- **Match found** — invoke the JS callback via
+  `root.to_inner(cx).call(cx, ...)`.
+- **No match** — pure Rust op, call `op.apply()`.
+
 `core::eval()` remains JS-agnostic.
 
 ### Type mapping
 
 | JS type      | Rust type                      |
 | ------------ | ------------------------------ |
-| `Context`    | `JsBox<RefCell<BindingState>>` |
-| `OpHandle`   | `JsBox<AnyOp>`                 |
-| `NodeHandle` | `JsBox<Node>`                  |
+| `Context`    | `JsBox<RefCell<ContextState>>` |
+| `OpHandle`   | `JsBox<OpHandle>`              |
+| `NodeHandle` | `JsBox<NodeHandle>`            |
 
 ```rust
-/// Operation that can be either Rust-native or JS.
-enum AnyOp {
-  Native(Arc<dyn Operation>),
-  Js(JsOp),
+/// Per-Context state: eval cache + callback registry.
+struct ContextState {
+  eval_ctx: EvalContext,
+  callbacks: HashMap<usize, Root<JsFunction>>,
 }
 ```
 
-`BindingState` holds `EvalContext` and any
-neon-layer state.
+### Addon loading
 
-`NodeHandle.cached()` returns a **new** `JsBox<Node>`
-wrapping the cached node — `JsBox` is immutable, so
-this is a new allocation, not mutation.
+The native addon path is stored in `package.json`
+under `addon.path` (e.g., `./dist/dag_ops_node.node`).
+`addon.ts` loads it via `createRequire`:
+
+```typescript
+import packageJson from "../package.json"
+  with { type: "json" };
+const addonPath = join(
+  nodeDirname, "..", packageJson.addon.path,
+);
+const Addon = nodeRequire(addonPath);
+```
+
+`scripts/copy-addon.ts` copies the cargo build
+output (`.dylib`/`.so`/`.dll`) to the `.node` path
+after each build.
 
 ### Method mapping
 
-- **`registerOp`** — `JsFunction::root(cx)` to store
-  the callback, wraps in `JsOp`, returns
-  `JsBox<AnyOp::Js(...)>`.
-- **`value`** — `core::value(v)`, returns
-  `JsBox<Node>`.
-- **`node`** — `core::node(op, inputs)` for native
-  ops. For JS ops, constructs `NodeKind::Op` using a
-  shim `Arc<dyn Operation>` that delegates to `JsOp`
-  at eval time.
-- **`evaluate`** — neon-specific eval loop (not
-  `core::eval`) that passes `FunctionContext` through.
+- **`registerOp`** — creates `PlaceholderOp`, stores
+  `Root<JsFunction>` in `ContextState.callbacks`
+  keyed by `op_identity()`.
+- **`value`** — `core::value(v)`, wraps in
+  `NodeHandle`.
+- **`node`** — `core::node(op, inputs)`, catches
+  arity panics via `catch_unwind`.
+- **`cached`** — `Node::cached()`, wraps in new
+  `NodeHandle`.
+- **`evaluate`** — `eval_with_js()` dispatches JS
+  callbacks via `FunctionContext`.
 - **`debugTree`** — `core::debug_tree(node)`.
 
 ## `meta` package
@@ -286,7 +317,8 @@ Rust tests: construction, arity-mismatch panic.
 
 Files: `packages/core/src/eval.rs`
 
-`EvalContext`, `eval()`.
+`EvalContext` (with `get_cached`/`cache` accessors),
+`eval()`.
 
 Rust tests:
 
@@ -311,24 +343,35 @@ Rust tests:
 
 Files: `packages/core/src/display.rs`
 
-`debug_tree()` implementation.
+`debug_tree()` with integer formatting for whole
+numbers.
 
 Rust tests:
 
 1. `debug_single_value` — prints `42`
-2. `debug_simple_op` — label + box-drawing children
-3. `debug_nested_graph` — multi-level
+2. `debug_single_value_fractional` — prints `1.5`
+3. `debug_simple_op` — label + box-drawing children
+4. `debug_nested_graph` — multi-level
    `├──`/`└──`/`│`
-4. `debug_cached_node` — `[cached]` prefix
-5. `debug_dag_shared_cached` — shared cached node in
+5. `debug_cached_node` — `[cached]` prefix
+6. `debug_dag_shared_cached` — shared cached node in
    both branches
 
 ### Stage 3 — Node.js bindings
 
-Files: `packages/node/src/lib.rs`, JS test files
+Files: `packages/node/src/lib.rs`,
+`packages/node/export/{addon-def,addon,index}.ts`,
+`scripts/copy-addon.ts`, JS test files.
 
-Neon layer exposing `Context`, `NodeHandle`,
-`OpHandle` with `AnyOp`-based eval loop.
+Neon layer: `NodeHandle`/`OpHandle` wrappers,
+`PlaceholderOp` + `op_identity()` callback lookup,
+`ContextState`, `eval_with_js()`.
+
+TypeScript layer: `addon-def.ts` (native interface
+with opaque `NativeHandle`), `addon.ts` (loader via
+`createRequire` + `package.json` addon path),
+`index.ts` (`Context`/`NodeHandle`/`OpHandle`
+classes).
 
 JS integration tests:
 
