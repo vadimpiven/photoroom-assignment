@@ -220,3 +220,22 @@ fn context_debug_tree<'cx>(
 ) -> JsResult<'cx, JsString> {
     Ok(cx.string(debug_tree(&root.0)))
 }
+
+#[cfg(test)]
+mod tests {
+    use core::CustomOp;
+    use core::EvalContext;
+    use core::eval;
+    use core::node;
+    use core::value;
+    use std::sync::Arc;
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn core_reexported_correctly() {
+        let add = Arc::new(CustomOp::new("x, y -> x + y", 2, |a| a[0] + a[1]));
+        let graph = node(add, vec![value(1.0), value(2.0)]);
+        let mut ctx = EvalContext::new();
+        assert_eq!(eval(&graph, &mut ctx), 3.0);
+    }
+}
