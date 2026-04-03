@@ -102,13 +102,24 @@ pub fn value(v: f32) -> Node {
     Node(Arc::new(NodeKind::Value(v)))
 }
 
+/// Create a closure-based operation (convenience for
+/// `Arc::new(CustomOp::new(...))`).
+#[must_use]
+pub fn op(
+    label: impl Into<String>,
+    num_inputs: usize,
+    apply: impl Fn(&[f32]) -> f32 + Send + Sync + 'static,
+) -> Arc<dyn Operation> {
+    Arc::new(CustomOp::new(label, num_inputs, apply))
+}
+
 /// Create an inner node applying `op` to `inputs`.
 ///
 /// # Panics
 ///
 /// Panics if `inputs.len() != op.num_inputs()`.
 #[must_use]
-pub fn node(op: Arc<dyn Operation>, inputs: Vec<Node>) -> Node {
+pub fn node(op: &Arc<dyn Operation>, inputs: &[Node]) -> Node {
     assert!(
         inputs.len() == op.num_inputs(),
         "arity mismatch: operation '{}' expects {} inputs, got {}",
@@ -116,7 +127,10 @@ pub fn node(op: Arc<dyn Operation>, inputs: Vec<Node>) -> Node {
         op.num_inputs(),
         inputs.len(),
     );
-    Node(Arc::new(NodeKind::Op { op, inputs }))
+    Node(Arc::new(NodeKind::Op {
+        op: Arc::clone(op),
+        inputs: inputs.to_vec(),
+    }))
 }
 
 #[cfg(test)]
@@ -124,7 +138,7 @@ mod tests {
     use super::*;
 
     fn add_op() -> Arc<dyn Operation> {
-        Arc::new(CustomOp::new("x, y -> x + y", 2, |args| args[0] + args[1]))
+        op("x, y -> x + y", 2, |a| a[0] + a[1])
     }
 
     #[test]
@@ -136,7 +150,7 @@ mod tests {
 
     #[test]
     fn create_op_node() {
-        let n = node(add_op(), vec![value(1.0), value(2.0)]);
+        let n = node(&add_op(), &[value(1.0), value(2.0)]);
         assert!(matches!(n.kind(), NodeKind::Op { .. }));
     }
 
@@ -156,6 +170,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "arity mismatch")]
     fn node_panics_on_arity_mismatch() {
-        let _ = node(add_op(), vec![value(1.0)]);
+        let _ = node(&add_op(), &[value(1.0)]);
     }
 }

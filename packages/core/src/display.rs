@@ -109,25 +109,10 @@ fn push_f32(buf: &mut String, v: f32) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::CustomOp;
-    use crate::Operation;
     use crate::node;
+    use crate::op;
     use crate::value;
-
-    fn add_op() -> Arc<dyn Operation> {
-        Arc::new(CustomOp::new("x, y -> x + y", 2, |a| a[0] + a[1]))
-    }
-
-    fn sqrt_op() -> Arc<dyn Operation> {
-        Arc::new(CustomOp::new("x -> sqrt(x)", 1, |a| a[0].sqrt()))
-    }
-
-    fn pow_op() -> Arc<dyn Operation> {
-        Arc::new(CustomOp::new("x, y -> x^y", 2, |a| a[0].powf(a[1])))
-    }
 
     #[test]
     fn debug_single_value() {
@@ -141,7 +126,8 @@ mod tests {
 
     #[test]
     fn debug_simple_op() {
-        let graph = node(add_op(), vec![value(1.0), value(2.0)]);
+        let add = op("x, y -> x + y", 2, |a| a[0] + a[1]);
+        let graph = node(&add, &[value(1.0), value(2.0)]);
         let expected = "\
 x, y -> x + y
 ├── 1
@@ -151,12 +137,14 @@ x, y -> x + y
 
     #[test]
     fn debug_nested_graph() {
-        // add(sqrt(9), pow(2, 3))
+        let add = op("x, y -> x + y", 2, |a| a[0] + a[1]);
+        let sqrt = op("x -> sqrt(x)", 1, |a| a[0].sqrt());
+        let pow = op("x, y -> x^y", 2, |a| a[0].powf(a[1]));
         let graph = node(
-            add_op(),
-            vec![
-                node(sqrt_op(), vec![value(9.0)]),
-                node(pow_op(), vec![value(2.0), value(3.0)]),
+            &add,
+            &[
+                node(&sqrt, &[value(9.0)]),
+                node(&pow, &[value(2.0), value(3.0)]),
             ],
         );
         let expected = "\
@@ -171,7 +159,8 @@ x, y -> x + y
 
     #[test]
     fn debug_cached_node() {
-        let graph = node(sqrt_op(), vec![value(9.0)]).cached();
+        let sqrt = op("x -> sqrt(x)", 1, |a| a[0].sqrt());
+        let graph = node(&sqrt, &[value(9.0)]).cached();
         let expected = "\
 [cached] x -> sqrt(x)
 └── 9";
@@ -180,14 +169,13 @@ x, y -> x + y
 
     #[test]
     fn debug_dag_shared_cached() {
-        // add(cached_sqrt, pow(cached_sqrt, 7))
-        let cached_sqrt = node(sqrt_op(), vec![value(9.0)]).cached();
+        let add = op("x, y -> x + y", 2, |a| a[0] + a[1]);
+        let sqrt = op("x -> sqrt(x)", 1, |a| a[0].sqrt());
+        let pow = op("x, y -> x^y", 2, |a| a[0].powf(a[1]));
+        let cached_sqrt = node(&sqrt, &[value(9.0)]).cached();
         let graph = node(
-            add_op(),
-            vec![
-                cached_sqrt.clone(),
-                node(pow_op(), vec![cached_sqrt, value(7.0)]),
-            ],
+            &add,
+            &[cached_sqrt.clone(), node(&pow, &[cached_sqrt, value(7.0)])],
         );
         let expected = "\
 x, y -> x + y

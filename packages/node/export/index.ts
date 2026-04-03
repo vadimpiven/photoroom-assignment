@@ -3,6 +3,16 @@
 import { Addon } from "./addon.ts";
 import type { NativeHandle } from "./addon-def.ts";
 
+/** Definition for a user-provided operation. */
+export interface OpDef {
+  /** Human-readable label shown in debug output. */
+  label: string;
+  /** Expected number of inputs (>= 1). */
+  numInputs: number;
+  /** Compute the result from the given inputs. */
+  apply: (...args: number[]) => number;
+}
+
 /** Opaque handle to a registered operation. */
 export class OpHandle {
   /** @internal */
@@ -45,12 +55,9 @@ export class Context {
     this.state = Addon.contextNew();
   }
 
-  /**
-   * Register an operation with a label (for debug),
-   * expected input count, and a JS callback.
-   */
-  registerOp(label: string, numInputs: number, apply: (...args: number[]) => number): OpHandle {
-    return new OpHandle(Addon.contextRegisterOp(this.state, label, numInputs, apply));
+  /** Register an operation from its definition. */
+  registerOp(def: OpDef): OpHandle {
+    return new OpHandle(Addon.contextRegisterOp(this.state, def.label, def.numInputs, def.apply));
   }
 
   /** Create a leaf node holding a constant f32 value. */

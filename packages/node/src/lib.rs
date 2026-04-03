@@ -163,8 +163,6 @@ fn context_node<'cx>(
     op: Handle<'cx, JsBox<OpHandle>>,
     inputs: Handle<'cx, JsArray>,
 ) -> JsResult<'cx, JsBox<NodeHandle>> {
-    let arc_op = Arc::clone(&op.0);
-
     let len = inputs.len(cx);
     let mut input_nodes = Vec::with_capacity(len as usize);
     for i in 0..len {
@@ -174,7 +172,7 @@ fn context_node<'cx>(
     }
 
     let result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node(arc_op, input_nodes)));
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node(&op.0, &input_nodes)));
 
     match result {
         Ok(n) => Ok(cx.boxed(NodeHandle(n))),
@@ -221,19 +219,17 @@ fn context_debug_tree<'cx>(
 
 #[cfg(test)]
 mod tests {
-    use core::CustomOp;
     use core::EvalContext;
-    use core::eval;
     use core::node;
+    use core::op;
     use core::value;
-    use std::sync::Arc;
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn core_reexported_correctly() {
-        let add = Arc::new(CustomOp::new("x, y -> x + y", 2, |a| a[0] + a[1]));
-        let graph = node(add, vec![value(1.0), value(2.0)]);
+        let add = op("x, y -> x + y", 2, |a| a[0] + a[1]);
+        let graph = node(&add, &[value(1.0), value(2.0)]);
         let mut ctx = EvalContext::new();
-        assert_eq!(eval(&graph, &mut ctx), 3.0);
+        assert_eq!(ctx.evaluate(&graph), 3.0);
     }
 }

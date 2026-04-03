@@ -15,4 +15,5 @@ pub use node::NodeId;
 pub use node::NodeKind;
 pub use node::Operation;
 pub use node::node;
+pub use node::op;
 pub use node::value;

@@ -34,6 +34,11 @@ impl EvalContext {
     pub fn cache(&mut self, id: NodeId, result: f32) {
         self.cache.insert(id, result);
     }
+
+    /// Evaluate a graph node using this context for caching.
+    pub fn evaluate(&mut self, node: &Node) -> f32 {
+        eval(node, self)
+    }
 }
 
 /// Evaluate a graph node, using `ctx` for caching.
@@ -67,55 +72,55 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
-    use crate::CustomOp;
     use crate::node;
+    use crate::op;
     use crate::value;
 
-    fn add_op() -> Arc<dyn crate::Operation> {
-        Arc::new(CustomOp::new("x, y -> x + y", 2, |a| a[0] + a[1]))
+    fn add() -> Arc<dyn crate::Operation> {
+        op("x, y -> x + y", 2, |a| a[0] + a[1])
     }
 
-    fn mul_op() -> Arc<dyn crate::Operation> {
-        Arc::new(CustomOp::new("x, y -> x * y", 2, |a| a[0] * a[1]))
+    fn mul() -> Arc<dyn crate::Operation> {
+        op("x, y -> x * y", 2, |a| a[0] * a[1])
     }
 
-    fn neg_op() -> Arc<dyn crate::Operation> {
-        Arc::new(CustomOp::new("x -> -x", 1, |a| -a[0]))
+    fn neg() -> Arc<dyn crate::Operation> {
+        op("x -> -x", 1, |a| -a[0])
     }
 
-    fn sum3_op() -> Arc<dyn crate::Operation> {
-        Arc::new(CustomOp::new("a, b, c -> a+b+c", 3, |a| a[0] + a[1] + a[2]))
+    fn sum3() -> Arc<dyn crate::Operation> {
+        op("a, b, c -> a+b+c", 3, |a| a[0] + a[1] + a[2])
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_single_value() {
         let mut ctx = EvalContext::new();
-        assert_eq!(eval(&value(42.0), &mut ctx), 42.0);
+        assert_eq!(ctx.evaluate(&value(42.0)), 42.0);
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_unary_op() {
         let mut ctx = EvalContext::new();
-        let graph = node(neg_op(), vec![value(5.0)]);
-        assert_eq!(eval(&graph, &mut ctx), -5.0);
+        let graph = node(&neg(), &[value(5.0)]);
+        assert_eq!(ctx.evaluate(&graph), -5.0);
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_binary_op() {
         let mut ctx = EvalContext::new();
-        let graph = node(add_op(), vec![value(3.0), value(4.0)]);
-        assert_eq!(eval(&graph, &mut ctx), 7.0);
+        let graph = node(&add(), &[value(3.0), value(4.0)]);
+        assert_eq!(ctx.evaluate(&graph), 7.0);
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_multi_input_op() {
         let mut ctx = EvalContext::new();
-        let graph = node(sum3_op(), vec![value(1.0), value(2.0), value(3.0)]);
-        assert_eq!(eval(&graph, &mut ctx), 6.0);
+        let graph = node(&sum3(), &[value(1.0), value(2.0), value(3.0)]);
+        assert_eq!(ctx.evaluate(&graph), 6.0);
     }
 
     #[test]
@@ -123,9 +128,9 @@ mod tests {
     fn eval_nested_graph() {
         // add(mul(2, 3), 4) = 10
         let mut ctx = EvalContext::new();
-        let inner = node(mul_op(), vec![value(2.0), value(3.0)]);
-        let graph = node(add_op(), vec![inner, value(4.0)]);
-        assert_eq!(eval(&graph, &mut ctx), 10.0);
+        let inner = node(&mul(), &[value(2.0), value(3.0)]);
+        let graph = node(&add(), &[inner, value(4.0)]);
+        assert_eq!(ctx.evaluate(&graph), 10.0);
     }
 
     #[test]
@@ -134,38 +139,36 @@ mod tests {
         // shared = 5, add(shared, shared) = 10
         let mut ctx = EvalContext::new();
         let shared = value(5.0);
-        let graph = node(add_op(), vec![shared.clone(), shared]);
-        assert_eq!(eval(&graph, &mut ctx), 10.0);
+        let graph = node(&add(), &[shared.clone(), shared]);
+        assert_eq!(ctx.evaluate(&graph), 10.0);
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_custom_op() {
         let mut ctx = EvalContext::new();
-        let pow = Arc::new(CustomOp::new("x, y -> x^y", 2, |a| a[0].powf(a[1])));
-        let graph = node(pow, vec![value(2.0), value(10.0)]);
-        assert_eq!(eval(&graph, &mut ctx), 1024.0);
+        let pow = op("x, y -> x^y", 2, |a| a[0].powf(a[1]));
+        let graph = node(&pow, &[value(2.0), value(10.0)]);
+        assert_eq!(ctx.evaluate(&graph), 1024.0);
     }
 
-    /// Helper: an operation that counts how many times
-    /// `apply` is called using an atomic counter.
-    fn counting_op(counter: Arc<AtomicUsize>) -> Arc<dyn crate::Operation> {
-        Arc::new(CustomOp::new("x -> x", 1, move |a| {
+    /// Helper: operation that counts `apply` calls.
+    fn counting(counter: Arc<AtomicUsize>) -> Arc<dyn crate::Operation> {
+        op("x -> x", 1, move |a| {
             counter.fetch_add(1, Ordering::Relaxed);
             a[0]
-        }))
+        })
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn cache_hit() {
         let counter = Arc::new(AtomicUsize::new(0));
-        let op = counting_op(Arc::clone(&counter));
-        let cached_node = node(op, vec![value(7.0)]).cached();
-        // Two parents reference the same cached node
-        let graph = node(add_op(), vec![cached_node.clone(), cached_node]);
+        let cnt = counting(Arc::clone(&counter));
+        let cached = node(&cnt, &[value(7.0)]).cached();
+        let graph = node(&add(), &[cached.clone(), cached]);
         let mut ctx = EvalContext::new();
-        assert_eq!(eval(&graph, &mut ctx), 14.0);
+        assert_eq!(ctx.evaluate(&graph), 14.0);
         assert_eq!(
             counter.load(Ordering::Relaxed),
             1,
@@ -177,11 +180,11 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn cache_persists_across_evals() {
         let counter = Arc::new(AtomicUsize::new(0));
-        let op = counting_op(Arc::clone(&counter));
-        let graph = node(op, vec![value(3.0)]).cached();
+        let cnt = counting(Arc::clone(&counter));
+        let graph = node(&cnt, &[value(3.0)]).cached();
         let mut ctx = EvalContext::new();
-        assert_eq!(eval(&graph, &mut ctx), 3.0);
-        assert_eq!(eval(&graph, &mut ctx), 3.0);
+        assert_eq!(ctx.evaluate(&graph), 3.0);
+        assert_eq!(ctx.evaluate(&graph), 3.0);
         assert_eq!(
             counter.load(Ordering::Relaxed),
             1,
@@ -192,11 +195,11 @@ mod tests {
     #[test]
     fn uncached_recomputes() {
         let counter = Arc::new(AtomicUsize::new(0));
-        let op = counting_op(Arc::clone(&counter));
-        let uncached = node(op, vec![value(1.0)]);
-        let graph = node(add_op(), vec![uncached.clone(), uncached]);
+        let cnt = counting(Arc::clone(&counter));
+        let uncached = node(&cnt, &[value(1.0)]);
+        let graph = node(&add(), &[uncached.clone(), uncached]);
         let mut ctx = EvalContext::new();
-        let _ = eval(&graph, &mut ctx);
+        let _ = ctx.evaluate(&graph);
         assert_eq!(
             counter.load(Ordering::Relaxed),
             2,
