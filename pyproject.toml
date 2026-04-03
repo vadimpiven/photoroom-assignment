@@ -1,0 +1,48 @@
+[project]
+name = "workspace"
+version = "0.0.0"
+dependencies = []
+
+[tool.uv]
+required-version = ">=0.9.21"
+exclude-newer = "1 day"
+
+[dependency-groups]
+dev = [
+    "pyrefly==0.59.1",
+    "ruff==0.15.8",
+    "semgrep==1.157.0 ; sys_platform != 'win32'",
+]
+
+[tool.pyrefly]
+project-includes = ["packages/**/*.py"]
+use-ignore-files = true
+
+[tool.ruff]
+cache-dir = ".cache/ruff"
+line-length = 100
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",
+    "COM812",
+    "INP001",
+    "ISC001",
+    "T20",
+]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.lint.pylint]
+max-args = 6
+max-branches = 12
+max-returns = 4
+max-statements = 50
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10

@@ -1,0 +1,27 @@
+packages:
+  - packages/core
+  - packages/meta
+  - packages/node
+
+blockExoticSubdeps: true
+
+catalog:
+  '@taplo/cli': 0.7.0
+  '@types/node': 25.5.0
+  '@vitest/coverage-istanbul': 4.1.2
+  fd-lock: 2.1.1
+  husky: 9.1.7
+  markdownlint-cli2: 0.22.0
+  oxfmt: 0.43.0
+  oxlint: 1.58.0
+  typescript: 6.0.2
+  vite: 8.0.3
+  vite-plugin-dts: 5.0.0-beta.6
+  vitest: 4.1.2
+
+minimumReleaseAge: 1440
+
+onlyBuiltDependencies:
+  - esbuild
+
+strictDepBuilds: true

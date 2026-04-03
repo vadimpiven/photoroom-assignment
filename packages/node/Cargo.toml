@@ -1,0 +1,20 @@
+[package]
+name = "dag_ops_node"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+core = { workspace = true }
+mimalloc = { workspace = true }
+neon = { workspace = true }
+
+[build-dependencies]
+anyhow.workspace = true
+meta = { workspace = true }
+neon-build = { workspace = true }

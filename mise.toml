@@ -1,0 +1,519 @@
+# $schema: https://mise.jdx.dev/schema/mise.json
+
+# mise.toml - Single source of truth for all tool versions
+# https://mise.jdx.dev/
+
+redactions = ["*_TOKEN", "*_SECRET", "*_KEY", "*_PASSWORD"]
+
+[settings]
+env_file = ".env"
+npm.package_manager = "pnpm"
+idiomatic_version_file_enable_tools = ["rust"]
+rust.cargo_home = ".cache/cargo"
+rust.rustup_home = ".cache/rustup"
+quiet = true
+experimental = true
+lockfile = true
+
+[env]
+PYTHONUTF8 = "1"
+PYTHONWARNINGS = "ignore"
+SCCACHE_CACHE_SIZE = "1G"
+RUSTC_WRAPPER = "sccache"
+MISE_ACTIVE = "1"
+
+# Cache directories
+CARGO_HOME = "{{ config_root }}/.cache/cargo"
+npm_config_store_dir = "{{ config_root }}/.cache/pnpm"
+RUSTUP_HOME = "{{ config_root }}/.cache/rustup"
+SCCACHE_DIR = "{{ config_root }}/.cache/sccache"
+UV_CACHE_DIR = "{{ config_root }}/.cache/uv"
+UV_PROJECT_ENVIRONMENT = "{{ config_root }}/.cache/venv"
+
+# Add Rust binaries to PATH
+_.path = ["{{ config_root }}/.cache/cargo/bin", "{{ config_root }}/node_modules/.bin"]
+
+# Set Python virtual environment path
+_.python.venv.path = "{{ config_root }}/.cache/venv"
+
+[tools]
+node = "24.14.1"
+rust.version = "nightly-2026-03-31"
+
+"aqua:jqlang/jq" = "1.8.1"
+"github:mikefarah/yq" = "4.52.5"
+"aqua:BurntSushi/ripgrep" = "15.1.0"
+"aqua:google/yamlfmt" = "0.21.0"
+"aqua:gitleaks/gitleaks" = "8.30.1"
+"aqua:astral-sh/uv" = "0.11.3"
+"aqua:cargo-bins/cargo-binstall" = "1.17.9"
+"aqua:cli/cli" = "2.89.0"
+
+# Tools with non-standard version prefix
+[tools."github:nextest-rs/nextest"]
+version_prefix = "cargo-nextest-"
+version = "0.9.132"
+
+[tools."github:mstange/samply"]
+version_prefix = "samply-v"
+version = "0.13.1"
+
+[tools."github:EmbarkStudios/cargo-deny"]
+version = "0.19.0"
+os = ["linux", "macos"]
+
+[tools."aqua:crate-ci/typos"]
+version = "1.45.0"
+os = ["linux", "macos"]
+
+[tools."github:taiki-e/cargo-llvm-cov"]
+version = "0.8.5"
+os = ["linux", "macos"]
+
+# Stick to 0.12.0 as 0.13.0 dropped support for macOS x86_64
+[tools."github:mozilla/sccache"]
+version = "0.12.0"
+[tools."github:mozilla/sccache".platforms]
+windows-x64 = { asset_pattern = "sccache-v*-x86_64-pc-windows-msvc.tar.gz", bin = "sccache.exe" }
+windows-arm64 = { asset_pattern = "sccache-v*-aarch64-pc-windows-msvc.tar.gz", bin = "sccache.exe" }
+linux-x64 = { asset_pattern = "sccache-v*-x86_64-unknown-linux-musl.tar.gz", bin = "sccache" }
+linux-arm64 = { asset_pattern = "sccache-v*-aarch64-unknown-linux-musl.tar.gz", bin = "sccache" }
+macos-x64 = { asset_pattern = "sccache-v*-x86_64-apple-darwin.tar.gz", bin = "sccache" }
+macos-arm64 = { asset_pattern = "sccache-v*-aarch64-apple-darwin.tar.gz", bin = "sccache" }
+
+# ============================================================================
+# SETUP TASKS - Initialize environment and tools
+# ============================================================================
+
+[tasks."setup:rust"]
+description = "Install Rust toolchain and components sequentially"
+hide = true
+run = "rustup show"
+sources = ["rust-toolchain.toml"]
+
+[tasks."setup:pnpm"]
+description = "Install pnpm dependencies"
+hide = true
+env = { CI = "true", HUSKY = "1" }
+run = ["corepack enable pnpm", "pnpm install --frozen-lockfile --prefer-offline"]
+sources = ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "packages/**/package.json"]
+
+[tasks."setup:python"]
+description = "Setup Python environment with uv"
+hide = true
+run = """
+uv sync --no-install-workspace
+mise sync python --uv
+"""
+sources = ["pyproject.toml", "uv.lock"]
+
+[tasks.setup]
+description = "Install all dependencies"
+depends = ["setup:rust", "setup:pnpm", "setup:python"]
+
+# ============================================================================
+# LINT & CHECK/FIX TASKS - Verify and fix code quality and security
+# ============================================================================
+
+# --- ruff (Python) ---
+[tasks."check:ruff-lint"]
+description = "Check Python code with ruff"
+hide = true
+depends = ["setup:python"]
+run = "uv run --no-sync ruff check"
+sources = ["packages/**/*.py", "pyproject.toml"]
+
+[tasks."fix:ruff-lint"]
+description = "Fix Python code with ruff"
+hide = true
+depends = ["setup:python"]
+run = "uv run --no-sync ruff check --fix"
+sources = ["packages/**/*.py", "pyproject.toml"]
+
+[tasks."check:ruff-format"]
+description = "Check Python code formatting with ruff"
+hide = true
+depends = ["check:ruff-lint"]
+run = "uv run --no-sync ruff format --check --diff"
+sources = ["packages/**/*.py", "pyproject.toml"]
+
+[tasks."fix:ruff-format"]
+description = "Format Python code with ruff"
+hide = true
+depends = ["fix:ruff-lint"]
+run = "uv run --no-sync ruff format"
+sources = ["packages/**/*.py", "pyproject.toml"]
+
+# --- pyrefly (Python) ---
+[tasks."check:pyrefly"]
+description = "Check Python code with pyrefly"
+hide = true
+depends = ["setup:python"]
+run = "uv run --no-sync pyrefly check"
+run_windows = "exit 0"
+sources = ["packages/**/*.py", "pyproject.toml"]
+
+[tasks."fix:pyrefly"]
+description = "Fix pyrefly issues"
+hide = true
+depends = ["setup:python"]
+run = "uv run --no-sync pyrefly check --remove-unused-ignores"
+run_windows = "exit 0"
+sources = ["packages/**/*.py", "pyproject.toml"]
+
+# --- oxlint (JS/TS) ---
+[tasks."check:oxlint"]
+description = "Check JS/TS with oxlint"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec oxlint . --deny-warnings"
+sources = ["{packages,scripts}/**/*.{ts,js,mts,mjs}"]
+
+[tasks."fix:oxlint"]
+description = "Fix JS/TS with oxlint"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec oxlint . --fix"
+sources = ["{packages,scripts}/**/*.{ts,js,mts,mjs}"]
+
+# --- oxfmt (JS/TS/JSON) ---
+[tasks."check:oxfmt"]
+description = "Check JS/TS/JSON with oxfmt"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec oxfmt --check ."
+sources = [
+    "*.{json,jsonc}",
+    "{packages,scripts}/**/*.{ts,js,mts,mjs,json,jsonc}",
+    ".oxfmtrc.json",
+]
+
+[tasks."fix:oxfmt"]
+description = "Format JS/TS/JSON with oxfmt"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec oxfmt --write ."
+sources = [
+    "*.{json,jsonc}",
+    "{packages,scripts}/**/*.{ts,js,mts,mjs,json,jsonc}",
+    ".oxfmtrc.json",
+]
+
+# --- taplo (TOML) ---
+[tasks."check:taplo"]
+description = "Check TOML files with taplo"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec taplo check"
+sources = ["*.toml", "{.cargo,.config,packages}/**/*.toml"]
+
+[tasks."fix:taplo"]
+description = "Format TOML files with taplo"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec taplo format"
+sources = ["*.toml", "{.cargo,.config,packages}/**/*.toml"]
+
+# --- markdownlint (Markdown) ---
+[tasks."check:markdownlint"]
+description = "Check Markdown files"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec markdownlint-cli2"
+sources = ["*.md", "packages/**/*.md", ".markdownlint-cli2.jsonc"]
+
+[tasks."fix:markdownlint"]
+description = "Fix Markdown files"
+hide = true
+depends = ["setup:pnpm"]
+run = "pnpm exec markdownlint-cli2 --fix"
+sources = ["*.md", "packages/**/*.md", ".markdownlint-cli2.jsonc"]
+
+# --- yamlfmt (YAML) ---
+[tasks."check:yamlfmt"]
+description = "Check YAML formatting"
+hide = true
+run = "yamlfmt -gitignore_excludes -lint"
+sources = ["*.{yaml,yml}"]
+
+[tasks."fix:yamlfmt"]
+description = "Format YAML files"
+hide = true
+run = "yamlfmt -gitignore_excludes"
+sources = ["*.{yaml,yml}"]
+
+# --- clippy (Rust) ---
+[tasks."check:clippy"]
+description = "Check Rust code with clippy"
+hide = true
+depends = ["setup:rust"]
+run = "cargo clippy --all-targets -r --locked -- -D warnings"
+sources = ["packages/**/*.rs", "Cargo.{toml,lock}", "clippy.toml"]
+
+[tasks."fix:clippy"]
+description = "Fix Rust code with clippy"
+hide = true
+depends = ["setup:rust"]
+run = "cargo clippy --all-targets --fix --allow-dirty"
+sources = ["packages/**/*.rs", "Cargo.{toml,lock}", "clippy.toml"]
+
+# --- rustfmt (Rust) ---
+[tasks."check:rustfmt"]
+description = "Check Rust formatting"
+hide = true
+depends = ["check:clippy"]
+run = "cargo fmt --check"
+sources = ["packages/**/*.rs", "rustfmt.toml"]
+
+[tasks."fix:rustfmt"]
+description = "Format Rust code"
+hide = true
+depends = ["fix:clippy"]
+run = "cargo fmt"
+sources = ["packages/**/*.rs", "rustfmt.toml"]
+
+# --- cargo-deny (Rust dependencies) ---
+[tasks."check:cargo-deny"]
+description = "Check Rust dependencies with cargo-deny"
+hide = true
+depends = ["setup:rust"]
+run = "cargo deny check"
+run_windows = "exit 0"
+sources = ["Cargo.{toml,lock}", "deny.toml"]
+
+[tasks."fix:cargo-deny"]
+description = "Check cargo-deny (no auto-fix available)"
+hide = true
+run = [{ task = "check:cargo-deny" }]
+
+# --- typos ---
+[tasks."check:typos"]
+description = "Check for typos in all files"
+hide = true
+run = "typos ."
+run_windows = "exit 0"
+sources = [
+    "*.{md,toml,json,yaml,yml}",
+    "{packages,scripts}/**/*.{rs,ts,js,mts,mjs,py,md,toml,json,yaml,yml}",
+]
+
+[tasks."fix:typos"]
+description = "Fix typos in all files"
+hide = true
+run = "typos . -w"
+run_windows = "exit 0"
+sources = [
+    "*.{md,toml,json,yaml,yml}",
+    "{packages,scripts}/**/*.{rs,ts,js,mts,mjs,py,md,toml,json,yaml,yml}",
+]
+
+# --- gitleaks (secret detection) ---
+[tasks."check:gitleaks"]
+description = "Scan for secrets with gitleaks"
+hide = true
+run = "gitleaks detect --no-banner"
+
+[tasks."fix:gitleaks"]
+description = "Scan for secrets (no auto-fix available)"
+hide = true
+run = [{ task = "check:gitleaks" }]
+
+# --- semgrep ---
+[tasks."check:semgrep"]
+description = "Security scan with semgrep"
+hide = true
+depends = ["setup:python"]
+run = "uv run --no-sync semgrep scan --error -q"
+run_windows = "exit 0"
+sources = ["{packages,scripts}/**/*.{rs,ts,js,mts,mjs,py,toml,json,yaml,yml}"]
+
+[tasks."fix:semgrep"]
+description = "Fix semgrep issues"
+hide = true
+depends = ["setup:python"]
+run = "uv run --no-sync semgrep scan --error -q --autofix"
+run_windows = "exit 0"
+sources = ["{packages,scripts}/**/*.{rs,ts,js,mts,mjs,py,toml,json,yaml,yml}"]
+
+# --- Global check/fix tasks ---
+[tasks.check]
+description = "Verify code quality"
+alias = "c"
+depends = [
+    "check:oxlint",
+    "check:oxfmt",
+    "check:taplo",
+    "check:markdownlint",
+    "check:yamlfmt",
+    "check:clippy",
+    "check:rustfmt",
+    "check:cargo-deny",
+    "check:typos",
+    "check:gitleaks",
+    "check:semgrep",
+]
+
+[tasks.fix]
+description = "Auto-fix code issues"
+alias = "f"
+depends = [
+    "fix:oxlint",
+    "fix:oxfmt",
+    "fix:taplo",
+    "fix:markdownlint",
+    "fix:yamlfmt",
+    "fix:clippy",
+    "fix:rustfmt",
+    "fix:cargo-deny",
+    "fix:typos",
+    "fix:gitleaks",
+    "fix:semgrep",
+    "fix:lock",
+]
+
+[tasks."fix:lock"]
+description = "Update mise lockfile for all platforms"
+hide = true
+run = """
+mise lock
+"""
+sources = ["mise.toml"]
+
+# ============================================================================
+# CLEAN TASKS - Cleanup caches and build artifacts
+# ============================================================================
+
+[tasks."clean:pnpm"]
+description = "Clean pnpm store"
+hide = true
+run = "pnpm store prune"
+
+[tasks."clean:cargo"]
+description = "Clean cargo cache and build artifacts"
+hide = true
+run = """
+cargo -Z gc clean gc
+cargo clean
+"""
+
+[tasks."clean:rustup"]
+description = "Clean unused rustup toolchains"
+hide = true
+run = "node scripts/clean-rustup.ts"
+
+[tasks.clean]
+description = "Free up disk space"
+depends = ["clean:pnpm", "clean:cargo", "clean:rustup"]
+
+# ============================================================================
+# UPDATE TASKS - Check for available updates
+# ============================================================================
+
+[tasks."update:pnpm"]
+description = "Check for pnpm updates"
+hide = true
+run = "pnpm outdated --recursive --sort-by name || exit 0"
+
+[tasks."update:cargo"]
+description = "Check for cargo updates"
+hide = true
+run = "cargo update --breaking -Z unstable-options --dry-run"
+
+[tasks."update:uv"]
+description = "Check for uv/Python updates"
+hide = true
+run = "uv lock --upgrade --dry-run"
+
+[tasks.update]
+description = "Show available updates"
+alias = "u"
+depends = ["update:pnpm", "update:cargo", "update:uv"]
+
+# ============================================================================
+# UPGRADE TASKS - Apply updates
+# ============================================================================
+
+[tasks."upgrade:pnpm"]
+description = "Update pnpm dependencies"
+hide = true
+run = """
+pnpm update --recursive --workspace
+pnpm audit --fix
+pnpm install
+"""
+
+[tasks."upgrade:cargo"]
+description = "Update cargo dependencies"
+hide = true
+run = """
+cargo -Z gc clean gc
+cargo clean
+cargo update
+"""
+
+[tasks."upgrade:uv"]
+description = "Update uv/Python dependencies"
+hide = true
+run = "uv lock --upgrade"
+
+[tasks.upgrade]
+description = "Apply available updates"
+depends = ["upgrade:pnpm", "upgrade:cargo", "upgrade:uv"]
+
+# ============================================================================
+# BUILD & TEST TASKS - Build and test the project
+# ============================================================================
+
+# --- Build tasks ---
+[tasks."build:core"]
+description = "Build core package"
+hide = true
+depends = ["setup:rust"]
+run = 'pnpm -F "{packages/core}" --if-present run build'
+sources = ["packages/core/**/*", "Cargo.{toml,lock}"]
+
+[tasks."build:meta"]
+description = "Build meta package"
+hide = true
+depends = ["setup:rust"]
+run = 'pnpm -F "{packages/meta}" --if-present run build'
+sources = ["packages/meta/**/*", "Cargo.{toml,lock}"]
+
+[tasks."build:node"]
+description = "Build node package"
+hide = true
+depends = ["setup:rust", "setup:pnpm", "setup:python"]
+run = 'pnpm -F "{packages/node}" --if-present run build'
+sources = ["packages/{core,meta,node}/**/*", "Cargo.{toml,lock}"]
+
+[tasks.build]
+description = "Compile all packages"
+alias = "b"
+depends = ["build:core", "build:meta", "build:node"]
+
+# --- Test tasks ---
+[tasks."test:core"]
+description = "Run tests for core package"
+hide = true
+depends = ["fix"]
+run = 'pnpm -F "{packages/core}" --if-present run test'
+sources = ["packages/core/**/*", "Cargo.{toml,lock}"]
+
+[tasks."test:meta"]
+description = "Run tests for meta package"
+hide = true
+depends = ["fix"]
+run = 'pnpm -F "{packages/meta}" --if-present run test'
+sources = ["packages/meta/**/*", "Cargo.{toml,lock}"]
+
+[tasks."test:node"]
+description = "Run tests for node package"
+hide = true
+depends = ["fix", "setup:pnpm"]
+run = 'pnpm -F "{packages/node}" --if-present run test'
+sources = ["packages/{core,meta,node}/**/*", "Cargo.{toml,lock}"]
+
+[tasks.test]
+description = "Run all tests"
+alias = "t"
+depends = ["test:core", "test:meta", "test:node"]

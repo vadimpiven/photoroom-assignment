@@ -1,0 +1,6 @@
+{
+  "ignorePatterns": [".cache"],
+  "rules": {
+    "typescript/no-deprecated": "error"
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "read_only_files": [
+    "**/.cargo/registry/src/**/*.rs",
+    "**/.cargo/git/checkouts/**/*.rs",
+    "**/lib/rustlib/src/rust/library/**/*.rs"
+  ],
+  "languages": {
+    "Python": {
+      "formatter": {
+        "external": {
+          "command": "ruff",
+          "arguments": ["format", "-"]
+        }
+      }
+    },
+    "JavaScript": {
+      "prettier": {
+        "allowed": false
+      }
+    },
+    "TypeScript": {
+      "prettier": {
+        "allowed": false
+      }
+    },
+    "JSON": {
+      "prettier": {
+        "allowed": false
+      }
+    },
+    "JSONC": {
+      "prettier": {
+        "allowed": false
+      }
+    }
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "targetDir": true
+        },
+        "runnables": {
+          "extraTestBinaryArgs": ["--nocapture"]
+        },
+        "assist": {
+          "emitMustUse": true,
+          "preferSelf": true
+        },
+        "check": {
+          "command": "clippy",
+          "extraArgs": ["--fix", "--allow-dirty"]
+        },
+        "diagnostics": {
+          "styleLints": {
+            "enable": true
+          }
+        },
+        "imports": {
+          "granularity": {
+            "group": "item"
+          },
+          "preferPrelude": true,
+          "prefix": "plain"
+        }
+      }
+    }
+  }
+}

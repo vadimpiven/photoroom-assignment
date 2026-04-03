@@ -1,0 +1,23 @@
+[package]
+name = "meta"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+indoc.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+tauri-winres.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+with_dir.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true

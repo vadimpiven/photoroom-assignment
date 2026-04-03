@@ -1,0 +1,27 @@
+{
+  "name": "workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preinstall": "npx only-allow pnpm && rustup show",
+    "prepare": "husky",
+    "test": "pnpm --recursive --if-present run test",
+    "setup-zed": "node ./scripts/setup-zed.ts"
+  },
+  "devDependencies": {
+    "@taplo/cli": "catalog:",
+    "@types/node": "catalog:",
+    "fd-lock": "catalog:",
+    "husky": "catalog:",
+    "markdownlint-cli2": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0",
+    "pnpm": "^10.26.0"
+  },
+  "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"
+}
