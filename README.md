@@ -17,9 +17,15 @@ mise run test
 
 Rerun tests without cache: `mise run -f t`
 
-## Build requirements
+## Packages
 
-### Required
+| Package | Purpose                                                    |
+| ------- | ---------------------------------------------------------- |
+| `core`  | DAG types, evaluation, debug display — pure Rust, no FFI   |
+| `meta`  | Build-time metadata and helpers used by `build.rs` scripts |
+| `node`  | Neon-based Node.js native addon that wraps `core`          |
+
+## Build requirements
 
 - [mise](https://mise.jdx.dev/getting-started.html) for tool
   version management
