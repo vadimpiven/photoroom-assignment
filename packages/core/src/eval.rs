@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Graph evaluation with optional caching.
+//! Graph evaluation with memoization. Use
+//! [`EvalContext::evaluate`] to compute the result of a
+//! graph; cached nodes are computed once and reused.
 
 use std::collections::HashMap;
 
@@ -8,44 +10,21 @@ use crate::node::Node;
 use crate::node::NodeId;
 use crate::node::NodeKind;
 
-/// Holds cached results for nodes marked with `.cached()`.
+/// Evaluation state. Holds memoized results for nodes
+/// marked with [`.cached()`](crate::Node::cached).
 ///
-/// Immutable graphs mean the cache never invalidates and
-/// remains valid across `eval()` calls.
+/// Immutable graphs mean cached values never invalidate
+/// and remain valid across repeated evaluations.
 #[derive(Default)]
 pub struct EvalContext {
     cache: HashMap<NodeId, f32>,
 }
 
-impl EvalContext {
-    /// Create a new, empty evaluation context.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Look up a cached result by node identity.
-    #[must_use]
-    pub fn get_cached(&self, id: &NodeId) -> Option<f32> {
-        self.cache.get(id).copied()
-    }
-
-    /// Store a computed result for a node identity.
-    pub fn cache(&mut self, id: NodeId, result: f32) {
-        self.cache.insert(id, result);
-    }
-
-    /// Evaluate a graph node using this context for caching.
-    pub fn evaluate(&mut self, node: &Node) -> f32 {
-        eval(node, self)
-    }
-}
-
-/// Evaluate a graph node, using `ctx` for caching.
+/// Walk the graph recursively, returning the computed f32.
 ///
 /// Non-cached nodes always recompute. Cached nodes store
-/// their result in `ctx` on first evaluation and return
-/// the stored value on subsequent encounters.
+/// their result on first evaluation and return the stored
+/// value on subsequent encounters.
 pub fn eval(node: &Node, ctx: &mut EvalContext) -> f32 {
     match node.kind() {
         NodeKind::Value(v) => *v,
@@ -62,6 +41,30 @@ pub fn eval(node: &Node, ctx: &mut EvalContext) -> f32 {
             ctx.cache.insert(id, v);
             v
         },
+    }
+}
+
+impl EvalContext {
+    /// Create a fresh evaluation context.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Look up a memoized result by node identity.
+    #[must_use]
+    pub fn get_cached(&self, id: &NodeId) -> Option<f32> {
+        self.cache.get(id).copied()
+    }
+
+    /// Store a memoized result for a node identity.
+    pub fn cache(&mut self, id: NodeId, result: f32) {
+        self.cache.insert(id, result);
+    }
+
+    /// Evaluate a graph and return the result.
+    pub fn evaluate(&mut self, node: &Node) -> f32 {
+        eval(node, self)
     }
 }
 
@@ -90,6 +93,13 @@ mod tests {
 
     fn sum3() -> Arc<dyn crate::Operation> {
         op("a, b, c -> a+b+c", 3, |a| a[0] + a[1] + a[2])
+    }
+
+    fn counting(counter: Arc<AtomicUsize>) -> Arc<dyn crate::Operation> {
+        op("x -> x", 1, move |a| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            a[0]
+        })
     }
 
     #[test]
@@ -126,7 +136,6 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_nested_graph() {
-        // add(mul(2, 3), 4) = 10
         let mut ctx = EvalContext::new();
         let inner = node(&mul(), &[value(2.0), value(3.0)]);
         let graph = node(&add(), &[inner, value(4.0)]);
@@ -136,7 +145,6 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn eval_dag_shared_node() {
-        // shared = 5, add(shared, shared) = 10
         let mut ctx = EvalContext::new();
         let shared = value(5.0);
         let graph = node(&add(), &[shared.clone(), shared]);
@@ -150,14 +158,6 @@ mod tests {
         let pow = op("x, y -> x^y", 2, |a| a[0].powf(a[1]));
         let graph = node(&pow, &[value(2.0), value(10.0)]);
         assert_eq!(ctx.evaluate(&graph), 1024.0);
-    }
-
-    /// Helper: operation that counts `apply` calls.
-    fn counting(counter: Arc<AtomicUsize>) -> Arc<dyn crate::Operation> {
-        op("x -> x", 1, move |a| {
-            counter.fetch_add(1, Ordering::Relaxed);
-            a[0]
-        })
     }
 
     #[test]

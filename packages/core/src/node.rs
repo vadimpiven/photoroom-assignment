@@ -1,119 +1,63 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Graph nodes, operations, and builder functions.
+//! Graph nodes and builder functions. Build graphs
+//! bottom-up with [`value`] and [`node`], then mark
+//! subtrees for memoization with [`Node::cached`].
 
 use std::sync::Arc;
 
-type ApplyFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
+use crate::operation::Operation;
 
-/// Opaque identity for cache lookups.
+/// Opaque node identity, stable across clones.
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
 pub struct NodeId(usize);
 
-/// A graph node. Clone is cheap (shared ownership).
-#[derive(Clone)]
-pub struct Node(Arc<NodeKind>);
-
-/// What kind of node this is.
+/// The variants a graph node can be.
 pub enum NodeKind {
-    /// Leaf node holding a constant f32 value.
+    /// Constant f32 value (leaf).
     Value(f32),
-    /// Inner node applying an operation to inputs.
+    /// Operation applied to child nodes (inner).
     Op {
         /// The operation to apply.
         op: Arc<dyn Operation>,
         /// Child nodes (>= 1).
         inputs: Vec<Node>,
     },
-    /// Wrapper that memoizes the inner node's result.
+    /// Memoized wrapper — result is cached on first eval.
     Cached(Node),
 }
 
-/// An operation that takes one or more f32 inputs and
-/// produces a single f32 output.
-pub trait Operation: Send + Sync {
-    /// Human-readable label used in debug output.
-    fn label(&self) -> &str;
-    /// Expected number of inputs (>= 1).
-    fn num_inputs(&self) -> usize;
-    /// Compute the result from the given inputs.
-    fn apply(&self, inputs: &[f32]) -> f32;
-}
-
-/// User-provided closure-based operation.
-pub struct CustomOp {
-    label: String,
-    num_inputs: usize,
-    apply: ApplyFn,
-}
-
-impl CustomOp {
-    /// Create a new closure-based operation.
-    pub fn new(
-        label: impl Into<String>,
-        num_inputs: usize,
-        apply: impl Fn(&[f32]) -> f32 + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            label: label.into(),
-            num_inputs,
-            apply: Box::new(apply),
-        }
-    }
-}
-
-impl Operation for CustomOp {
-    fn label(&self) -> &str {
-        &self.label
-    }
-
-    fn num_inputs(&self) -> usize {
-        self.num_inputs
-    }
-
-    fn apply(&self, inputs: &[f32]) -> f32 {
-        (self.apply)(inputs)
-    }
-}
+/// A graph node. Cloning is cheap.
+#[derive(Clone)]
+pub struct Node(Arc<NodeKind>);
 
 impl Node {
-    /// Returns a new node wrapping self with caching enabled.
+    /// Wrap this node for memoization. Returns a new node.
     #[must_use]
     pub fn cached(self) -> Self {
         Self(Arc::new(NodeKind::Cached(self)))
     }
 
-    /// Opaque identity for cache lookups.
+    /// Stable identity for this node, suitable as a cache key.
     #[must_use]
     pub fn id(&self) -> NodeId {
         NodeId(Arc::as_ptr(&self.0) as usize)
     }
 
-    /// Access the underlying node kind.
+    /// Which variant this node is.
     #[must_use]
     pub fn kind(&self) -> &NodeKind {
         &self.0
     }
 }
 
-/// Create a leaf node holding a constant value.
+/// Create a constant-value leaf node.
 #[must_use]
 pub fn value(v: f32) -> Node {
     Node(Arc::new(NodeKind::Value(v)))
 }
 
-/// Create a closure-based operation (convenience for
-/// `Arc::new(CustomOp::new(...))`).
-#[must_use]
-pub fn op(
-    label: impl Into<String>,
-    num_inputs: usize,
-    apply: impl Fn(&[f32]) -> f32 + Send + Sync + 'static,
-) -> Arc<dyn Operation> {
-    Arc::new(CustomOp::new(label, num_inputs, apply))
-}
-
-/// Create an inner node applying `op` to `inputs`.
+/// Create an operation node with the given inputs.
 ///
 /// # Panics
 ///
@@ -136,6 +80,7 @@ pub fn node(op: &Arc<dyn Operation>, inputs: &[Node]) -> Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::op;
 
     fn add_op() -> Arc<dyn Operation> {
         op("x, y -> x + y", 2, |a| a[0] + a[1])

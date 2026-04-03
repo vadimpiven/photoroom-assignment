@@ -1,110 +1,101 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Textual debug display for graphs.
+//! Tree-formatted debug output for graphs. Use
+//! [`debug_tree`] to get a string with box-drawing
+//! characters (`├──`, `└──`, `│`).
 
 use crate::node::Node;
 use crate::node::NodeKind;
 
-/// Return a tree-formatted debug string for a graph.
-///
-/// Uses box-drawing characters (`├──`, `└──`, `│`) for
-/// tree structure. Cached nodes show a `[cached]` prefix.
-#[must_use]
-pub fn debug_tree(node: &Node) -> String {
-    let mut buf = String::new();
-    fmt_node(node, &mut buf, &[], true);
-    // Remove trailing newline for clean output
-    if buf.ends_with('\n') {
-        buf.pop();
-    }
-    buf
-}
-
-/// Format a single node and recurse into children.
-///
-/// `ancestors` tracks whether each ancestor level is a
-/// "last child" (true) or not (false), so we know whether
-/// to draw `│` or blank in the prefix column.
-///
-/// `is_root` suppresses the branch prefix on the top node.
-fn fmt_node(node: &Node, buf: &mut String, ancestors: &[bool], is_root: bool) {
-    // Draw prefix for non-root nodes
-    if !is_root {
-        for &is_last in &ancestors[..ancestors.len() - 1] {
-            if is_last {
-                buf.push_str("    ");
-            } else {
-                buf.push_str("│   ");
-            }
-        }
-        if let Some(&is_last) = ancestors.last() {
-            if is_last {
-                buf.push_str("└── ");
-            } else {
-                buf.push_str("├── ");
-            }
-        }
-    }
-
-    match node.kind() {
-        NodeKind::Value(v) => {
-            push_f32(buf, *v);
-            buf.push('\n');
-        },
-        NodeKind::Op { op, inputs } => {
-            buf.push_str(op.label());
-            buf.push('\n');
-            for (i, child) in inputs.iter().enumerate() {
-                let is_last = i == inputs.len() - 1;
-                let mut next = ancestors.to_vec();
-                next.push(is_last);
-                fmt_node(child, buf, &next, false);
-            }
-        },
-        NodeKind::Cached(inner) => {
-            buf.push_str("[cached] ");
-            // Inline the inner node on the same line
-            fmt_cached_inner(inner, buf, ancestors);
-        },
-    }
-}
-
-/// Format the inner content of a cached node, continuing
-/// on the same line as the `[cached]` prefix.
-fn fmt_cached_inner(node: &Node, buf: &mut String, ancestors: &[bool]) {
-    match node.kind() {
-        NodeKind::Value(v) => {
-            push_f32(buf, *v);
-            buf.push('\n');
-        },
-        NodeKind::Op { op, inputs } => {
-            buf.push_str(op.label());
-            buf.push('\n');
-            for (i, child) in inputs.iter().enumerate() {
-                let is_last = i == inputs.len() - 1;
-                let mut next = ancestors.to_vec();
-                next.push(is_last);
-                fmt_node(child, buf, &next, false);
-            }
-        },
-        NodeKind::Cached(inner) => {
-            buf.push_str("[cached] ");
-            fmt_cached_inner(inner, buf, ancestors);
-        },
-    }
-}
-
-/// Push an f32 value, using integer formatting when possible.
-fn push_f32(buf: &mut String, v: f32) {
+fn write_value(buf: &mut String, v: f32) {
     use std::fmt::Write as _;
     #[allow(clippy::float_cmp)]
     if v == v.trunc() && v.is_finite() {
-        // Print as integer for clean output (42 not 42.0)
         #[allow(clippy::cast_possible_truncation)]
         let _ = write!(buf, "{}", v as i64);
     } else {
         let _ = write!(buf, "{v}");
     }
+}
+
+fn write_cached_content(node: &Node, buf: &mut String, depth: &[bool]) {
+    match node.kind() {
+        NodeKind::Value(v) => {
+            write_value(buf, *v);
+            buf.push('\n');
+        },
+        NodeKind::Op { op, inputs } => {
+            buf.push_str(op.label());
+            buf.push('\n');
+            write_children(inputs, buf, depth);
+        },
+        NodeKind::Cached(inner) => {
+            buf.push_str("[cached] ");
+            write_cached_content(inner, buf, depth);
+        },
+    }
+}
+
+fn write_children(inputs: &[Node], buf: &mut String, depth: &[bool]) {
+    for (i, child) in inputs.iter().enumerate() {
+        let is_last = i == inputs.len() - 1;
+        let mut next_depth = depth.to_vec();
+        next_depth.push(is_last);
+        write_node(child, buf, &next_depth, false);
+    }
+}
+
+fn write_tree_prefix(buf: &mut String, depth: &[bool]) {
+    for &is_last in &depth[..depth.len() - 1] {
+        if is_last {
+            buf.push_str("    ");
+        } else {
+            buf.push_str("│   ");
+        }
+    }
+    if let Some(&is_last) = depth.last() {
+        if is_last {
+            buf.push_str("└── ");
+        } else {
+            buf.push_str("├── ");
+        }
+    }
+}
+
+fn write_node(node: &Node, buf: &mut String, depth: &[bool], is_root: bool) {
+    if !is_root {
+        write_tree_prefix(buf, depth);
+    }
+
+    match node.kind() {
+        NodeKind::Value(v) => {
+            write_value(buf, *v);
+            buf.push('\n');
+        },
+        NodeKind::Op { op, inputs } => {
+            buf.push_str(op.label());
+            buf.push('\n');
+            write_children(inputs, buf, depth);
+        },
+        NodeKind::Cached(inner) => {
+            buf.push_str("[cached] ");
+            write_cached_content(inner, buf, depth);
+        },
+    }
+}
+
+/// Render a graph as a tree with box-drawing characters.
+///
+/// Cached nodes are prefixed with `[cached]`. Values are
+/// printed as integers when possible (`42` not `42.0`).
+#[must_use]
+pub fn debug_tree(node: &Node) -> String {
+    let mut buf = String::new();
+    write_node(node, &mut buf, &[], true);
+    if buf.ends_with('\n') {
+        buf.pop();
+    }
+    buf
 }
 
 #[cfg(test)]

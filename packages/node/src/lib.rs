@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Node.js bindings for dag-ops via neon.
-//!
-//! Exposes `Context`, `NodeHandle`, and `OpHandle` to JS.
-//! JS-defined operations are called directly through
-//! neon's `FunctionContext` — no `Channel` or async needed.
+//! Node.js bindings for dag-ops. Exposes the core graph
+//! API to JavaScript through neon, with JS callbacks as
+//! operations evaluated on the main thread.
 
 use core::EvalContext;
 use core::Node;
@@ -19,21 +17,19 @@ use std::sync::Arc;
 
 use neon::prelude::*;
 
-// ── Wrapper types (Finalize for JsBox) ──────────────────
-
-/// Wraps a [`Node`] for `JsBox` (orphan rule).
+/// Node handle for JS interop.
 struct NodeHandle(Node);
 
 impl Finalize for NodeHandle {}
 
-/// Wraps an `Arc<dyn Operation>` for `JsBox` (orphan rule).
+/// Operation handle for JS interop.
 struct OpHandle(Arc<dyn Operation>);
 
 impl Finalize for OpHandle {}
 
-/// Placeholder operation stored in the core graph when the
-/// real logic lives in a JS callback. `apply()` is never
-/// called — [`eval_with_js`] invokes the callback directly.
+/// Stands in for a JS-defined operation in the core graph.
+/// Evaluation is handled by [`eval_with_js`], which calls
+/// the real JS callback instead of `apply`.
 struct PlaceholderOp {
     label: String,
     num_inputs: usize,
@@ -53,41 +49,37 @@ impl Operation for PlaceholderOp {
     }
 }
 
-/// Per-`Context` state: eval cache + JS callback registry.
+/// State behind a JS `Context` instance.
 struct ContextState {
     eval_ctx: EvalContext,
-    /// Maps operation identity to the JS callback.
+    /// Maps operation identity to its JS callback.
     callbacks: HashMap<usize, Root<JsFunction>>,
 }
 
 impl Finalize for ContextState {}
 
-// ── Helpers ─────────────────────────────────────────────
-
-/// Stable identity for an `Arc<dyn Operation>`, used as
-/// the lookup key into the JS callback registry.
+/// Stable identity for an operation, used to look up
+/// JS callbacks during evaluation.
 fn op_identity(op: &Arc<dyn Operation>) -> usize {
     Arc::as_ptr(op).cast::<()>() as usize
 }
 
-// ── Evaluation with JS callback dispatch ────────────────
-
-/// Evaluate a graph, dispatching JS callbacks via `cx`
-/// when a [`PlaceholderOp`] is encountered.
+/// Evaluate a graph, calling JS callbacks for operations
+/// registered from JavaScript.
 fn eval_with_js<'cx>(
     cx: &mut FunctionContext<'cx>,
-    node: &Node,
+    graph_node: &Node,
     state: &mut ContextState,
 ) -> NeonResult<f32> {
-    match node.kind() {
+    match graph_node.kind() {
         NodeKind::Value(v) => Ok(*v),
         NodeKind::Op { op, inputs } => {
             let mut args = Vec::with_capacity(inputs.len());
             for input in inputs {
                 args.push(eval_with_js(cx, input, state)?);
             }
-            if let Some(root) = state.callbacks.get(&op_identity(op)) {
-                let func = root.to_inner(cx);
+            if let Some(callback) = state.callbacks.get(&op_identity(op)) {
+                let func = callback.to_inner(cx);
                 let this = cx.undefined();
                 let js_args: Vec<Handle<'cx, JsValue>> = args
                     .iter()
@@ -113,10 +105,7 @@ fn eval_with_js<'cx>(
     }
 }
 
-// ── Exported functions ──────────────────────────────────
-
-/// Create a new context (holds eval cache and
-/// JS callback registry).
+/// Create a new context.
 #[neon::export(name = "contextNew")]
 fn context_new() -> Result<RefCell<ContextState>, neon::types::extract::Error> {
     Ok(RefCell::new(ContextState {
@@ -140,15 +129,15 @@ fn context_register_op<'cx>(
         num_inputs: num_inputs as usize,
     });
     let key = op_identity(&placeholder);
-    let root = callback.root(cx);
+    let rooted = callback.root(cx);
 
     let mut cs = state.borrow_mut();
-    cs.callbacks.insert(key, root);
+    cs.callbacks.insert(key, rooted);
 
     Ok(cx.boxed(OpHandle(placeholder)))
 }
 
-/// Create a leaf node holding a constant f32 value.
+/// Create a constant-value leaf node.
 #[neon::export(name = "contextValue", context)]
 fn context_value<'cx>(cx: &mut FunctionContext<'cx>, v: f64) -> JsResult<'cx, JsBox<NodeHandle>> {
     #[allow(clippy::cast_possible_truncation)]
@@ -156,7 +145,7 @@ fn context_value<'cx>(cx: &mut FunctionContext<'cx>, v: f64) -> JsResult<'cx, Js
     Ok(cx.boxed(NodeHandle(value(v))))
 }
 
-/// Create an inner node applying an operation to inputs.
+/// Create an operation node with the given inputs.
 #[neon::export(name = "contextNode", context)]
 fn context_node<'cx>(
     cx: &mut FunctionContext<'cx>,
@@ -187,7 +176,7 @@ fn context_node<'cx>(
     }
 }
 
-/// Mark a node for caching. Returns a new handle.
+/// Mark a node for memoization. Returns a new handle.
 #[neon::export(name = "nodeCached", context)]
 fn node_cached<'cx>(
     cx: &mut FunctionContext<'cx>,
@@ -196,7 +185,7 @@ fn node_cached<'cx>(
     Ok(cx.boxed(NodeHandle(node_handle.0.clone().cached())))
 }
 
-/// Evaluate a graph, returning the f32 result.
+/// Evaluate a graph and return the result.
 #[neon::export(name = "contextEvaluate", context)]
 fn context_evaluate<'cx>(
     cx: &mut FunctionContext<'cx>,
@@ -208,7 +197,7 @@ fn context_evaluate<'cx>(
     Ok(cx.number(f64::from(v)))
 }
 
-/// Return a debug tree string for a graph.
+/// Render a graph as a debug tree string.
 #[neon::export(name = "contextDebugTree", context)]
 fn context_debug_tree<'cx>(
     cx: &mut FunctionContext<'cx>,
