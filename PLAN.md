@@ -11,7 +11,7 @@ import { Context } from "dag-ops";
 
 const ctx = new Context();
 
-// Register operations: name (for debug), arity, function
+// Register operations: label (for debug), arity, function
 const add = ctx.registerOp("x, y -> x + y", 2, (a, b) => a + b);
 const sqrt = ctx.registerOp("x -> sqrt(x)", 1, (x) => Math.sqrt(x));
 const pow = ctx.registerOp("x, y -> x^y", 2, (a, b) => a ** b);
@@ -27,7 +27,7 @@ const sqrtNine = ctx.node(sqrt, [nine]).cached();
 // DAG: sqrtNine referenced by two parents
 const graph = ctx.node(add, [sqrtNine, ctx.node(pow, [sqrtNine, seven])]);
 
-// Evaluate — cached nodes computed once per context
+// Evaluate — cached nodes computed once per eval context
 const r1 = ctx.evaluate(graph);
 // = add(3, pow(3, 7)) = 2190
 const r2 = ctx.evaluate(graph);
@@ -74,14 +74,14 @@ export class Context {
 
 ```rust
 pub trait Operation: Send + Sync {
-  fn name(&self) -> &str;
+  fn label(&self) -> &str;
   fn num_inputs(&self) -> usize; // >= 1
   fn apply(&self, inputs: &[f32]) -> f32;
 }
 
-/// Closure-based operation for Rust callers.
-pub struct FnOperation {
-  name: String,
+/// User-provided closure-based operation.
+pub struct CustomOp {
+  label: String,
   num_inputs: usize,
   apply: Box<dyn Fn(&[f32]) -> f32 + Send + Sync>,
 }
@@ -90,71 +90,77 @@ pub struct FnOperation {
 ### Node
 
 ```rust
-/// Newtype over Arc — enables methods, hides internals.
+/// Graph node. Clone is cheap (shared ownership).
 #[derive(Clone)]
-pub struct NodeRef(Arc<NodeInner>);
+pub struct Node(Arc<NodeKind>);
 
-pub type OpRef = Arc<dyn Operation>;
-
-enum NodeInner {
+enum NodeKind {
   Value(f32),
-  Op { op: OpRef, inputs: Vec<NodeRef> },
-  Cached(NodeRef),
+  Op {
+    op: Arc<dyn Operation>,
+    inputs: Vec<Node>,
+  },
+  Cached(Node),
 }
 
-impl NodeRef {
-  /// Returns a new NodeRef wrapping self with caching.
-  pub fn cached(self) -> NodeRef {
-    NodeRef(Arc::new(NodeInner::Cached(self)))
+/// Opaque identity for cache lookups.
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+struct NodeId(usize);
+
+impl Node {
+  /// Returns a new Node wrapping self with caching.
+  pub fn cached(self) -> Node {
+    Node(Arc::new(NodeKind::Cached(self)))
   }
 
-  /// Pointer-based identity for cache keys.
-  fn cache_key(&self) -> usize {
-    Arc::as_ptr(&self.0) as usize
+  fn id(&self) -> NodeId {
+    NodeId(Arc::as_ptr(&self.0) as usize)
   }
 }
 ```
 
 Bottom-up construction guarantees acyclicity: `node()`
-and `cached()` consume existing `NodeRef`s, no mutation
+and `cached()` consume existing `Node`s, no mutation
 after creation.
 
 ### Builders
 
 ```rust
-pub fn value(v: f32) -> NodeRef;
-pub fn node(op: OpRef, inputs: Vec<NodeRef>) -> NodeRef;
+pub fn value(v: f32) -> Node;
+pub fn node(
+  op: Arc<dyn Operation>, inputs: Vec<Node>,
+) -> Node;
 // panics if inputs.len() != op.num_inputs()
 ```
 
 Core `node()` panics on arity mismatch. The neon layer
-catches this and calls `cx.throw_error()` instead, so JS
-callers see a proper exception.
+catches this and calls `cx.throw_error()` instead, so
+JS callers see a proper exception.
 
 ### Evaluation
 
 ```rust
 pub struct EvalContext {
-  cache: HashMap<usize, f32>,
+  cache: HashMap<NodeId, f32>,
 }
 
 pub fn eval(
-  node: &NodeRef, ctx: &mut EvalContext,
+  node: &Node, ctx: &mut EvalContext,
 ) -> f32 {
-  match node.inner() {
-    NodeInner::Value(v) => *v,
-    NodeInner::Op { op, inputs } => {
+  match node.kind() {
+    NodeKind::Value(v) => *v,
+    NodeKind::Op { op, inputs } => {
       let args: Vec<f32> =
         inputs.iter().map(|n| eval(n, ctx)).collect();
       op.apply(&args)
     }
-    NodeInner::Cached(inner) => {
-      let key = inner.cache_key();
-      if let Some(&v) = ctx.cache.get(&key) {
+    NodeKind::Cached(inner) => {
+      let id = inner.id();
+      if let Some(&v) = ctx.cache.get(&id) {
         return v;
       }
       let v = eval(inner, ctx);
-      ctx.cache.insert(key, v);
+      ctx.cache.insert(id, v);
       v
     }
   }
@@ -168,20 +174,21 @@ always recompute.
 ### Debug display
 
 ```rust
-pub fn debug_tree(node: &NodeRef) -> String;
+pub fn debug_tree(node: &Node) -> String;
 ```
 
-`Value` prints the f32 literal. `Op` prints `op.name()`.
-`Cached` adds a `[cached]` prefix. Box-drawing characters
-(`├──`, `└──`, `│`) for tree structure.
+`Value` prints the f32 literal. `Op` prints
+`op.label()`. `Cached` adds a `[cached]` prefix.
+Box-drawing characters (`├──`, `└──`, `│`) for tree
+structure.
 
 ### File layout
 
 ```txt
 packages/core/src/
 ├── lib.rs        # re-exports
-├── node.rs       # NodeInner, NodeRef, OpRef,
-│                 # Operation, FnOperation,
+├── node.rs       # NodeKind, Node, NodeId,
+│                 # Operation, CustomOp,
 │                 # value(), node()
 ├── eval.rs       # eval(), EvalContext
 └── display.rs    # debug_tree()
@@ -189,31 +196,33 @@ packages/core/src/
 
 ## Neon layer (`packages/node/src/lib.rs`)
 
-### JS callback design (Option B: direct dispatch)
+### JS callback design
 
-All evaluation originates from JS via `Context.evaluate()`.
-Since we already hold a `FunctionContext`, JS callbacks
-execute directly — no `Channel`, no async, no deadlock
+All evaluation originates from JS via
+`Context.evaluate()`. Since we hold a neon
+`FunctionContext`, JS callbacks execute directly on
+the main thread — no `Channel`, no async, no deadlock
 risk.
 
 ```rust
-/// Holds a rooted JS function for use during eval.
-struct JsOperation {
-  name: String,
+/// JS-defined operation, callable only from the
+/// JS main thread via FunctionContext.
+struct JsOp {
+  label: String,
   num_inputs: usize,
   root: Root<JsFunction>,
 }
 ```
 
-`JsOperation` does **not** implement `Operation` (which
-requires `Send + Sync`). Instead, the neon layer has its
-own eval loop that checks the operation type:
+`JsOp` does **not** implement `Operation` (which
+requires `Send + Sync`). Instead, the neon layer has
+its own eval loop that checks the operation type:
 
-- **Rust `OpRef`** — calls `op.apply()` directly.
-- **`JsOperation`** — calls
-  `root.to_inner(cx).call_with(&cx).args(js_args).apply(cx)`
-  to invoke the JS callback synchronously on the main
-  thread.
+- **Rust `Arc<dyn Operation>`** — calls `op.apply()`
+  directly.
+- **`JsOp`** — calls
+  `root.to_inner(cx).call_with(&cx).args(...).apply(cx)`
+  to invoke the JS callback synchronously.
 
 This means `packages/node` has a parallel eval function
 that threads `FunctionContext` through the recursion.
@@ -221,38 +230,46 @@ that threads `FunctionContext` through the recursion.
 
 ### Type mapping
 
-| JS type      | Rust type                     |
-| ------------ | ----------------------------- |
-| `Context`    | `JsBox<RefCell<NeonContext>>` |
-| `OpHandle`   | `JsBox<OpVariant>`            |
-| `NodeHandle` | `JsBox<NodeRef>`              |
+| JS type      | Rust type                      |
+| ------------ | ------------------------------ |
+| `Context`    | `JsBox<RefCell<BindingState>>` |
+| `OpHandle`   | `JsBox<AnyOp>`                 |
+| `NodeHandle` | `JsBox<Node>`                  |
 
-`OpVariant` is an enum: `Rust(OpRef)` or
-`Js(JsOperation)`. `NeonContext` holds `EvalContext` and
-any neon-layer state.
+```rust
+/// Operation that can be either Rust-native or JS.
+enum AnyOp {
+  Native(Arc<dyn Operation>),
+  Js(JsOp),
+}
+```
 
-`NodeHandle.cached()` returns a **new** `JsBox<NodeRef>`
-wrapping the cached node — `JsBox` is immutable, so this
-is a new allocation, not mutation.
+`BindingState` holds `EvalContext` and any
+neon-layer state.
+
+`NodeHandle.cached()` returns a **new** `JsBox<Node>`
+wrapping the cached node — `JsBox` is immutable, so
+this is a new allocation, not mutation.
 
 ### Method mapping
 
 - **`registerOp`** — `JsFunction::root(cx)` to store
-  the callback, wraps in `JsOperation`, returns
-  `JsBox<OpVariant::Js(...)>`.
+  the callback, wraps in `JsOp`, returns
+  `JsBox<AnyOp::Js(...)>`.
 - **`value`** — `core::value(v)`, returns
-  `JsBox<NodeRef>`.
-- **`node`** — `core::node(op, inputs)` for Rust ops.
-  For JS ops, constructs `NodeInner::Op` using a shim
-  `OpRef` that delegates to `JsOperation` at eval time.
+  `JsBox<Node>`.
+- **`node`** — `core::node(op, inputs)` for native
+  ops. For JS ops, constructs `NodeKind::Op` using a
+  shim `Arc<dyn Operation>` that delegates to `JsOp`
+  at eval time.
 - **`evaluate`** — neon-specific eval loop (not
   `core::eval`) that passes `FunctionContext` through.
 - **`debugTree`** — `core::debug_tree(node)`.
 
 ## `meta` package
 
-Build-time utility for neon. Pre-exists in the workspace
-scaffold; no new code needed there.
+Build-time utility for neon. Pre-exists in the
+workspace scaffold; no new code needed there.
 
 ## Stages
 
@@ -260,8 +277,8 @@ scaffold; no new code needed there.
 
 Files: `packages/core/src/{lib,node}.rs`
 
-`Operation` trait, `FnOperation`, `NodeInner`, `NodeRef`,
-`OpRef`, builders `value()` and `node()`.
+`Operation` trait, `CustomOp`, `NodeKind`, `Node`,
+`NodeId`, builders `value()` and `node()`.
 
 Rust tests: construction, arity-mismatch panic.
 
@@ -281,14 +298,14 @@ Rust tests:
 5. `eval_nested_graph` — `add(mul(2, 3), 4)` returns
    `10.0`
 6. `eval_dag_shared_node` — same node in two parents
-7. `eval_custom_op` — closure via `FnOperation`
+7. `eval_custom_op` — closure via `CustomOp`
 8. `node_panics_on_arity_mismatch` — `#[should_panic]`
 9. `cache_hit` — cached node evaluated once when
    referenced twice (verify via `AtomicUsize` counter)
-10. `cache_persists_across_evals` — second `eval()` call
-    hits cache
-11. `uncached_recomputes` — without `.cached()`, counter
-    increments each time
+10. `cache_persists_across_evals` — second `eval()`
+    call hits cache
+11. `uncached_recomputes` — without `.cached()`,
+    counter increments each time
 
 ### Stage 2 — Debug display
 
@@ -299,8 +316,9 @@ Files: `packages/core/src/display.rs`
 Rust tests:
 
 1. `debug_single_value` — prints `42`
-2. `debug_simple_op` — name + box-drawing children
-3. `debug_nested_graph` — multi-level `├──`/`└──`/`│`
+2. `debug_simple_op` — label + box-drawing children
+3. `debug_nested_graph` — multi-level
+   `├──`/`└──`/`│`
 4. `debug_cached_node` — `[cached]` prefix
 5. `debug_dag_shared_cached` — shared cached node in
    both branches
@@ -309,12 +327,13 @@ Rust tests:
 
 Files: `packages/node/src/lib.rs`, JS test files
 
-Neon layer exposing `Context`, `NodeHandle`, `OpHandle`
-with `OpVariant`-based eval loop.
+Neon layer exposing `Context`, `NodeHandle`,
+`OpHandle` with `AnyOp`-based eval loop.
 
 JS integration tests:
 
-1. `full_usage_example` — JS example above returns `2190`
+1. `full_usage_example` — JS example above returns
+   `2190`
 2. `custom_op_from_js` — JS callback as operation
 3. `cache_works_across_evals` — two evals, correct
    results
