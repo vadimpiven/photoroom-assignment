@@ -2,7 +2,8 @@
 
 //! Textual debug display for graphs.
 
-use crate::node::{Node, NodeKind};
+use crate::node::Node;
+use crate::node::NodeKind;
 
 /// Return a tree-formatted debug string for a graph.
 ///
@@ -26,12 +27,7 @@ pub fn debug_tree(node: &Node) -> String {
 /// to draw `│` or blank in the prefix column.
 ///
 /// `is_root` suppresses the branch prefix on the top node.
-fn fmt_node(
-    node: &Node,
-    buf: &mut String,
-    ancestors: &[bool],
-    is_root: bool,
-) {
+fn fmt_node(node: &Node, buf: &mut String, ancestors: &[bool], is_root: bool) {
     // Draw prefix for non-root nodes
     if !is_root {
         for &is_last in &ancestors[..ancestors.len() - 1] {
@@ -54,7 +50,7 @@ fn fmt_node(
         NodeKind::Value(v) => {
             push_f32(buf, *v);
             buf.push('\n');
-        }
+        },
         NodeKind::Op { op, inputs } => {
             buf.push_str(op.label());
             buf.push('\n');
@@ -64,27 +60,23 @@ fn fmt_node(
                 next.push(is_last);
                 fmt_node(child, buf, &next, false);
             }
-        }
+        },
         NodeKind::Cached(inner) => {
             buf.push_str("[cached] ");
             // Inline the inner node on the same line
             fmt_cached_inner(inner, buf, ancestors);
-        }
+        },
     }
 }
 
 /// Format the inner content of a cached node, continuing
 /// on the same line as the `[cached]` prefix.
-fn fmt_cached_inner(
-    node: &Node,
-    buf: &mut String,
-    ancestors: &[bool],
-) {
+fn fmt_cached_inner(node: &Node, buf: &mut String, ancestors: &[bool]) {
     match node.kind() {
         NodeKind::Value(v) => {
             push_f32(buf, *v);
             buf.push('\n');
-        }
+        },
         NodeKind::Op { op, inputs } => {
             buf.push_str(op.label());
             buf.push('\n');
@@ -94,11 +86,11 @@ fn fmt_cached_inner(
                 next.push(is_last);
                 fmt_node(child, buf, &next, false);
             }
-        }
+        },
         NodeKind::Cached(inner) => {
             buf.push_str("[cached] ");
             fmt_cached_inner(inner, buf, ancestors);
-        }
+        },
     }
 }
 
@@ -120,7 +112,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{CustomOp, Operation, node, value};
+    use crate::CustomOp;
+    use crate::Operation;
+    use crate::node;
+    use crate::value;
 
     fn add_op() -> Arc<dyn Operation> {
         Arc::new(CustomOp::new("x, y -> x + y", 2, |a| a[0] + a[1]))
@@ -186,8 +181,7 @@ x, y -> x + y
     #[test]
     fn debug_dag_shared_cached() {
         // add(cached_sqrt, pow(cached_sqrt, 7))
-        let cached_sqrt =
-            node(sqrt_op(), vec![value(9.0)]).cached();
+        let cached_sqrt = node(sqrt_op(), vec![value(9.0)]).cached();
         let graph = node(
             add_op(),
             vec![

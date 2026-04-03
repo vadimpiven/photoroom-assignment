@@ -4,7 +4,9 @@
 
 use std::collections::HashMap;
 
-use crate::node::{Node, NodeId, NodeKind};
+use crate::node::Node;
+use crate::node::NodeId;
+use crate::node::NodeKind;
 
 /// Holds cached results for nodes marked with `.cached()`.
 ///
@@ -21,6 +23,17 @@ impl EvalContext {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Look up a cached value by node identity.
+    #[must_use]
+    pub fn get(&self, id: &NodeId) -> Option<f32> {
+        self.cache.get(id).copied()
+    }
+
+    /// Store a computed value for a node identity.
+    pub fn insert(&mut self, id: NodeId, value: f32) {
+        self.cache.insert(id, value);
+    }
 }
 
 /// Evaluate a graph node, using `ctx` for caching.
@@ -32,10 +45,9 @@ pub fn eval(node: &Node, ctx: &mut EvalContext) -> f32 {
     match node.kind() {
         NodeKind::Value(v) => *v,
         NodeKind::Op { op, inputs } => {
-            let args: Vec<f32> =
-                inputs.iter().map(|n| eval(n, ctx)).collect();
+            let args: Vec<f32> = inputs.iter().map(|n| eval(n, ctx)).collect();
             op.apply(&args)
-        }
+        },
         NodeKind::Cached(inner) => {
             let id = inner.id();
             if let Some(&v) = ctx.cache.get(&id) {
@@ -44,17 +56,20 @@ pub fn eval(node: &Node, ctx: &mut EvalContext) -> f32 {
             let v = eval(inner, ctx);
             ctx.cache.insert(id, v);
             v
-        }
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use super::*;
-    use crate::{CustomOp, node, value};
+    use crate::CustomOp;
+    use crate::node;
+    use crate::value;
 
     fn add_op() -> Arc<dyn crate::Operation> {
         Arc::new(CustomOp::new("x, y -> x + y", 2, |a| a[0] + a[1]))
@@ -69,9 +84,7 @@ mod tests {
     }
 
     fn sum3_op() -> Arc<dyn crate::Operation> {
-        Arc::new(CustomOp::new("a, b, c -> a+b+c", 3, |a| {
-            a[0] + a[1] + a[2]
-        }))
+        Arc::new(CustomOp::new("a, b, c -> a+b+c", 3, |a| a[0] + a[1] + a[2]))
     }
 
     #[test]
@@ -101,8 +114,7 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn eval_multi_input_op() {
         let mut ctx = EvalContext::new();
-        let graph =
-            node(sum3_op(), vec![value(1.0), value(2.0), value(3.0)]);
+        let graph = node(sum3_op(), vec![value(1.0), value(2.0), value(3.0)]);
         assert_eq!(eval(&graph, &mut ctx), 6.0);
     }
 
@@ -122,8 +134,7 @@ mod tests {
         // shared = 5, add(shared, shared) = 10
         let mut ctx = EvalContext::new();
         let shared = value(5.0);
-        let graph =
-            node(add_op(), vec![shared.clone(), shared]);
+        let graph = node(add_op(), vec![shared.clone(), shared]);
         assert_eq!(eval(&graph, &mut ctx), 10.0);
     }
 
@@ -131,20 +142,14 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn eval_custom_op() {
         let mut ctx = EvalContext::new();
-        let pow = Arc::new(CustomOp::new(
-            "x, y -> x^y",
-            2,
-            |a| a[0].powf(a[1]),
-        ));
+        let pow = Arc::new(CustomOp::new("x, y -> x^y", 2, |a| a[0].powf(a[1])));
         let graph = node(pow, vec![value(2.0), value(10.0)]);
         assert_eq!(eval(&graph, &mut ctx), 1024.0);
     }
 
     /// Helper: an operation that counts how many times
     /// `apply` is called using an atomic counter.
-    fn counting_op(
-        counter: Arc<AtomicUsize>,
-    ) -> Arc<dyn crate::Operation> {
+    fn counting_op(counter: Arc<AtomicUsize>) -> Arc<dyn crate::Operation> {
         Arc::new(CustomOp::new("x -> x", 1, move |a| {
             counter.fetch_add(1, Ordering::Relaxed);
             a[0]
@@ -158,10 +163,7 @@ mod tests {
         let op = counting_op(Arc::clone(&counter));
         let cached_node = node(op, vec![value(7.0)]).cached();
         // Two parents reference the same cached node
-        let graph = node(
-            add_op(),
-            vec![cached_node.clone(), cached_node],
-        );
+        let graph = node(add_op(), vec![cached_node.clone(), cached_node]);
         let mut ctx = EvalContext::new();
         assert_eq!(eval(&graph, &mut ctx), 14.0);
         assert_eq!(
@@ -192,10 +194,7 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let op = counting_op(Arc::clone(&counter));
         let uncached = node(op, vec![value(1.0)]);
-        let graph = node(
-            add_op(),
-            vec![uncached.clone(), uncached],
-        );
+        let graph = node(add_op(), vec![uncached.clone(), uncached]);
         let mut ctx = EvalContext::new();
         let _ = eval(&graph, &mut ctx);
         assert_eq!(
